@@ -11,3 +11,9 @@ venv/
 htmlcov/
 node_modules/
 *.log
+aggregate.py
+bandit-report.json
+gitleaks-report.json
+semgrep-report.json
+unified_inventory.*
+triaged_vulnerabilities_v2.csv
