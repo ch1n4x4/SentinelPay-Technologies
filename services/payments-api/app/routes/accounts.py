@@ -20,14 +20,22 @@ def get_account(account_id):
     cur = conn.cursor()
     try:
         cur.execute(
-            "SELECT id, user_id, account_number, currency, balance, status, created_at "
-            "FROM accounts WHERE id = %s",
-            (account_id,)
+            """
+            SELECT id, user_id, account_number, currency, balance, status, created_at
+            FROM accounts
+            WHERE id = %s AND user_id = %s
+            """,
+            (account_id, request.current_user_id),
         )
+
         account = cur.fetchone()
+
         if not account:
             return jsonify({"error": "account not found"}), 404
-        return jsonify(dict(account))
+        account_dict = dict(account)
+        if 'balance' in account_dict and account_dict['balance'] is not None:
+            account_dict['balance'] = str(account_dict['balance'])
+        return jsonify(account_dict)
     finally:
         cur.close()
         conn.close()
@@ -45,7 +53,13 @@ def list_accounts():
             (request.current_user_id,)
         )
         rows = cur.fetchall()
-        return jsonify([dict(r) for r in rows])
+        results = []
+        for r in rows:
+            row_dict = dict(r)
+            if 'balance' in row_dict and row_dict['balance'] is not None:
+                row_dict['balance'] = str(row_dict['balance'])
+            results.append(row_dict)
+        return jsonify(results)
     finally:
         cur.close()
         conn.close()
