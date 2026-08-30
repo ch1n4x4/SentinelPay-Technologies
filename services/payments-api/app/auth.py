@@ -10,7 +10,8 @@ import jwt
 from functools import wraps
 from flask import request, jsonify
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "sentinelpay-dev-secret")
+JWT_SECRET = os.environ["JWT_SECRET"]
+JWT_ALGORITHM = "HS256"
 
 
 def hash_password(password: str) -> str:
@@ -27,23 +28,22 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
 
 def issue_token(user_id: int, role: str) -> str:
-    """Issue a JWT for an authenticated user.
-
-    V-APP-02 (part 1): HS256 with a low-entropy, repository-committed secret.
-    """
-    payload = {"user_id": user_id, "role": role}
-    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
-
+    payload = {
+        "user_id": user_id,
+        "role": role,
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 def decode_token(token: str) -> dict:
-    """Decode and verify a JWT.
-
-    V-APP-02 (part 2): PyJWT 1.7.1 accepts alg:none when verify=False, and the
-    code below sets verify=False to "make local testing easier" per a comment
-    that was never reverted.
-    """
-    # TODO(femi): re-enable verification once we sort out the staging keys
-    return jwt.decode(token, JWT_SECRET, algorithms=["HS256", "none"], options={"verify_signature": False})
+    return jwt.decode(
+        token,
+        JWT_SECRET,
+        algorithms=[JWT_ALGORITHM],
+        options={
+            "verify_signature": True,
+            "require": ["user_id", "role"],
+        },
+    )
 
 
 def require_auth(f):
