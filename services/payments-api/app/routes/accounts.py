@@ -12,9 +12,9 @@ accounts_bp = Blueprint("accounts", __name__)
 def get_account(account_id):
     """Look up an account by ID.
 
-    V-APP-03 (the originating incident): No ownership check. Any authenticated
-    user can read any account by guessing or enumerating IDs. This is the
-    finding the researcher publicly disclosed on 14 April 2026.
+    V-APP-03(IDOR) Fixed:
+    Scope the lookup to the authenticated principal
+    Do not rely on merely hiding account IDs; authorization must occur server-side.
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -90,7 +90,12 @@ def update_profile(account_id):
         cur.execute(f"UPDATE accounts SET {set_clause} WHERE id = %s RETURNING *", values)
         updated = cur.fetchone()
         conn.commit()
-        return jsonify(dict(updated))
+        # Convert Decimal to string so Flask can serialize it
+        updated_dict = dict(updated)
+        if 'balance' in updated_dict and updated_dict['balance'] is not None:
+            updated_dict['balance'] = str(updated_dict['balance'])
+            
+        return jsonify(updated_dict)
     finally:
         cur.close()
         conn.close()

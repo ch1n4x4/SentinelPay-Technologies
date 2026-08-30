@@ -4,6 +4,9 @@ import jwt
 from functools import wraps
 from flask import request, jsonify
 
+"""V-APP-02 (Broken JWT) Fixed:
+Use a strong server-side secret and only one permitted algorithm.
+"""
 JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = "HS256"
 

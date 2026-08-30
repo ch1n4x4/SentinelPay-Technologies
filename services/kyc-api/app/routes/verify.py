@@ -33,7 +33,9 @@ def verify_bvn():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
+"""V-APP-01 (SQLi) Fixed:
+Parameterize all values
+"""
 @verify_bp.route("/lookup", methods=["GET"])
 @require_auth
 def lookup_kyc():

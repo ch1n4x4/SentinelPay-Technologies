@@ -5,10 +5,51 @@ from flask import Blueprint, request, jsonify
 
 from app.db import get_connection
 from app.auth import require_auth
-
-webhooks_bp = Blueprint("webhooks", __name__)
+from urllib.parse import urlparse
+import ipaddress
+import socket
 
 WEBHOOK_TIMEOUT = int(os.environ.get("WEBHOOK_TIMEOUT", "10"))
+
+"""
+Added allowlist of registered HTTPS callback destinations validator
+"""
+def validate_callback_url(url: str) -> None:
+    parsed = urlparse(url)
+
+    if parsed.scheme != "https":
+        raise ValueError("callback must use HTTPS")
+
+    if parsed.username or parsed.password:
+        raise ValueError("userinfo not allowed in URL")
+
+    if not parsed.hostname:
+        raise ValueError("hostname required")
+
+    try:
+        addresses = socket.getaddrinfo(
+            parsed.hostname,
+            443,
+            type=socket.SOCK_STREAM,
+        )
+    except socket.gaierror:
+        raise ValueError("hostname could not be resolved")
+
+    for item in addresses:
+        ip = ipaddress.ip_address(item[4][0])
+
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+        ):
+            raise ValueError(
+                "private/reserved destination is not allowed"
+            )
+        
+webhooks_bp = Blueprint("webhooks", __name__)
 
 
 @webhooks_bp.route("/", methods=["POST"])
@@ -40,13 +81,9 @@ def register_webhook():
 @webhooks_bp.route("/test", methods=["POST"])
 @require_auth
 def test_webhook():
-    """Test-fire a webhook by fetching the supplied URL with a sample payload.
-
-    V-APP-04: Server-Side Request Forgery. The URL is fetched with no validation
-    of scheme, host, or destination. Try /v1/webhooks/test with
-    {"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"}
-    once this is deployed to AWS, and the EC2/Fargate instance metadata
-    credentials come back in the response body.
+    """
+    V-APP-04 (SSRF) Fixed: call validate_callback_url() on the callback URL 
+    immediately before the HTTP client is invoked.
     """
     data = request.get_json() or {}
     url = data.get("url")
@@ -55,12 +92,20 @@ def test_webhook():
         return jsonify({"error": "url required"}), 400
 
     try:
-        # No allowlist, no scheme check, no IP filter, no redirect cap.
-        resp = requests.get(url, timeout=WEBHOOK_TIMEOUT)
+        validate_callback_url(url)
+
+        resp = requests.get(
+            url,
+            timeout=WEBHOOK_TIMEOUT,
+            allow_redirects=False,
+        )
+
         return jsonify({
             "status_code": resp.status_code,
             "headers": dict(resp.headers),
-            "body": resp.text[:5000]
+            "body": resp.text[:5000],
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502

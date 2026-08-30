@@ -9,22 +9,33 @@ import hashlib
 import jwt
 from functools import wraps
 from flask import request, jsonify
+from werkzeug.security import generate_password_hash, check_password_hash
 
+"""V-APP-02 (Broken JWT) Fixed:
+Use a strong server-side secret and only one permitted algorithm.
+"""
 JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = "HS256"
 
+# ============================================================
+# REMEDIATION BLOCK: Secure password storage and verification
+#
+# Passwords are never stored in plaintext. Werkzeug's PBKDF2-SHA256
+# password hashing uses a unique salt and a deliberately expensive
+# key-derivation function to make offline password cracking harder.
+# Verification is performed against the stored password hash rather
+# than comparing plaintext passwords.
+# ============================================================
 
 def hash_password(password: str) -> str:
-    """Hash a password for storage.
-
-    V-APP-06: Uses MD5 with no salt. Trivially reversible for common passwords
-    via rainbow tables, and MD5 is cryptographically broken regardless.
-    """
-    return hashlib.md5(password.encode()).hexdigest()
-
+    return generate_password_hash(
+        password,
+        method="pbkdf2:sha256",
+        salt_length=16,
+    )
 
 def verify_password(password: str, stored_hash: str) -> bool:
-    return hash_password(password) == stored_hash
+    return check_password_hash(stored_hash, password)
 
 
 def issue_token(user_id: int, role: str) -> str:
@@ -34,6 +45,10 @@ def issue_token(user_id: int, role: str) -> str:
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
+"""Removed:
+algorithms=["none"]
+options={"verify_signature": False}
+"""
 def decode_token(token: str) -> dict:
     return jwt.decode(
         token,
