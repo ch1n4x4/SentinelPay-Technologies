@@ -10,31 +10,12 @@ from flask import Blueprint, request, jsonify
 from app.db import get_connection
 from app.auth import require_auth
 
+# REMEDIATION START: V-APP-11 Audit Logging
+# Removed local audit function and imported the shared module[cite: 27].
+from app.audit import audit_event
+# REMEDIATION END
+
 wallets_bp = Blueprint("wallets", __name__)
-
-
-# ============================================================
-# REMEDIATION BLOCK: V-APP-11 - Structured audit logging
-#
-# Add a dedicated audit logger so sensitive money-movement
-# operations are recorded with structured, machine-readable
-# fields.
-# ============================================================
-audit_logger = logging.getLogger("sentinelpay.audit")
-
-
-def audit_event(event: str, **fields):
-    """Write a structured audit event to the application logger."""
-    audit_logger.info(
-        json.dumps(
-            {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "event": event,
-                **fields,
-            },
-            separators=(",", ":"),
-        )
-    )
 
 
 @wallets_bp.route("/<int:account_id>/credit", methods=["POST"])
@@ -52,14 +33,10 @@ def credit_wallet(account_id):
     cur = conn.cursor()
 
     try:
-        # REMEDIATION START: V-APP-03 Wallet Ownership Check
-        # Scoped the account lookup to include 'AND user_id = %s' to ensure
-        # callers cannot credit arbitrary accounts that do not belong to them[cite: 12].
         cur.execute(
             "SELECT balance FROM accounts WHERE id = %s AND user_id = %s",
             (account_id, request.current_user_id),
         )
-        # REMEDIATION END
 
         row = cur.fetchone()
 
@@ -104,17 +81,7 @@ def credit_wallet(account_id):
 @wallets_bp.route("/<int:account_id>/debit", methods=["POST"])
 @require_auth
 def debit_wallet(account_id):
-    """Debit funds from a wallet.
-
-    V-APP-05: Race-condition remediation.
-    The account row is locked using SELECT ... FOR UPDATE and the
-    balance check, balance update, and transaction insert occur
-    within the same database transaction.
-
-    V-APP-11: Missing audit-log remediation.
-    A structured audit event is emitted after the database
-    transaction successfully commits.
-    """
+    """Debit funds from a wallet."""
     data = request.get_json() or {}
 
     amount = Decimal(str(data.get("amount", "0")))
@@ -127,24 +94,9 @@ def debit_wallet(account_id):
     conn = get_connection()
 
     try:
-        # ========================================================
-        # REMEDIATION BLOCK: V-APP-05 - Atomic transaction +
-        # row-level locking
-        #
-        # FOR UPDATE locks this account row until the transaction
-        # commits or rolls back. This prevents concurrent debit
-        # requests from reading the same balance simultaneously.
-        #
-        # The account balance, currency, validation, update, and
-        # transaction insertion all happen within the same DB
-        # transaction.
-        # ========================================================
         with conn:
             with conn.cursor() as cur:
 
-                # REMEDIATION START: V-APP-03 Wallet Ownership Check
-                # Scoped the locked account lookup to include 'AND user_id = %s' 
-                # to prevent cross-account debit operations[cite: 12].
                 cur.execute(
                     """
                     SELECT balance, currency
@@ -154,7 +106,6 @@ def debit_wallet(account_id):
                     """,
                     (account_id, request.current_user_id),
                 )
-                # REMEDIATION END
 
                 row = cur.fetchone()
 
@@ -162,13 +113,6 @@ def debit_wallet(account_id):
                     return jsonify({"error": "account not found"}), 404
 
                 current_balance = Decimal(str(row["balance"]))
-
-                # ====================================================
-                # REMEDIATION BLOCK: V-APP-11 - Dynamic currency
-                #
-                # Use the currency stored on the account for the
-                # audit event instead of assuming NGN.
-                # ====================================================
                 currency = row["currency"]
 
                 if current_balance < amount:
@@ -214,16 +158,6 @@ def debit_wallet(account_id):
                     ),
                 )
 
-        # ========================================================
-        # REMEDIATION BLOCK: V-APP-11 - Audit logging
-        #
-        # This is intentionally outside the transaction block.
-        # The audit event is therefore emitted only after the
-        # database transaction has committed successfully.
-        #
-        # Currency comes from the actual account record rather
-        # than being hard-coded to NGN.
-        # ========================================================
         audit_event(
             "wallet_debit",
             actor_user_id=request.current_user_id,

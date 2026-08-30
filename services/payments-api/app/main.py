@@ -9,11 +9,21 @@ from app.routes.wallets import wallets_bp
 from app.routes.webhooks import webhooks_bp
 from app.routes.admin import admin_bp
 
+# REMEDIATION START: V-APP-08 App Initialization
+# Import the shared limiter from the extensions module[cite: 21, 22].
+from app.extensions import limiter
+# REMEDIATION END
+
 
 def create_app():
     app = Flask(__name__)
     app.config["JWT_SECRET"] = os.environ.get("JWT_SECRET", "sentinelpay-dev-secret")
     app.config["ENVIRONMENT"] = os.environ.get("ENVIRONMENT", "development")
+
+    # REMEDIATION START: V-APP-08 App Initialization
+    # Initialize the limiter on the actual application factory[cite: 21, 22].
+    limiter.init_app(app)
+    # REMEDIATION END
 
     app.register_blueprint(auth_bp, url_prefix="/v1/auth")
     app.register_blueprint(accounts_bp, url_prefix="/v1/accounts")

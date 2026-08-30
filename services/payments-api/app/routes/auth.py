@@ -1,45 +1,35 @@
 """Authentication routes: registration, login, and OTP."""
-import os
+from flask import Blueprint, request, jsonify
 
-from flask import Flask, Blueprint, request, jsonify
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
+# REMEDIATION START: V-APP-08 App Initialization
+# Removed the local Limiter instantiation. Imported the shared limiter 
+# extension so limits are registered to the main Flask app[cite: 21, 22].
+from app.extensions import limiter
+# REMEDIATION END
 
 from app.db import get_connection
 from app.auth import hash_password, verify_password, issue_token
-
-
-# ============================================================
-# REMEDIATION BLOCK: V-APP-08 - Rate limiting
-#
-# Use the client's remote IP address as the default rate-limit
-# key and store counters in Redis so limits are shared across
-# multiple application instances.
-# ============================================================
-limiter = Limiter(
-    key_func=get_remote_address,
-    storage_uri=os.getenv(
-        "RATELIMIT_STORAGE_URI",
-        "redis://redis:6379/2",
-    ),
-)
-
 
 auth_bp = Blueprint("auth", __name__)
 
 
 @auth_bp.route("/register", methods=["POST"])
+# REMEDIATION START: V-APP-08 Rate limiting (Registration)
+# Prevent abuse of the registration endpoint to enumerate existing emails.
+@limiter.limit("5/minute")
+@limiter.limit("5/minute", key_func=lambda: (request.get_json() or {}).get("email", ""))
+# REMEDIATION END
 def register():
-    """Register a new merchant account.
-
-    V-APP-08: No rate limiting. Anyone can hammer this endpoint to enumerate
-    existing emails (via the unique-constraint error response).
-    """
+    """Register a new merchant account."""
     data = request.get_json() or {}
     email = data.get("email")
     password = data.get("password")
     full_name = data.get("full_name", "")
-    role = data.get("role", "merchant")  # V-APP-07: client can self-assign role
+    
+    # REMEDIATION START: V-APP-07 Role Mass Assignment
+    # Hardcode the role to 'merchant' to prevent privilege escalation.
+    role = "merchant"
+    # REMEDIATION END
 
     if not email or not password:
         return jsonify({"error": "email and password required"}), 400
@@ -65,13 +55,14 @@ def register():
 
 
 @auth_bp.route("/login", methods=["POST"])
+# REMEDIATION START: V-APP-08 Dual-dimension Rate Limiting
+# Applied two dimensions of rate limiting: one based on the remote IP address, 
+# and a second based specifically on the requested email account[cite: 21, 22].
 @limiter.limit("5/minute")
+@limiter.limit("5/minute", key_func=lambda: (request.get_json() or {}).get("email", ""))
+# REMEDIATION END
 def login():
-    """Authenticate a user and issue a JWT.
-
-    V-APP-08 remediation: Limit login attempts to 5 requests per
-    minute per remote address to reduce password brute-force attempts.
-    """
+    """Authenticate a user and issue a JWT."""
     data = request.get_json() or {}
     email = data.get("email")
     password = data.get("password")
@@ -110,12 +101,14 @@ def login():
 
 
 @auth_bp.route("/otp", methods=["POST"])
+# REMEDIATION START: V-APP-08 Dual-dimension Rate Limiting
+# Applied two dimensions of rate limiting: one based on the remote IP address, 
+# and a second based specifically on the requested phone number[cite: 21, 22].
 @limiter.limit("5/minute")
+@limiter.limit("5/minute", key_func=lambda: (request.get_json() or {}).get("phone", ""))
+# REMEDIATION END
 def request_otp():
     """Request an OTP code for step-up authentication.
-
-    V-APP-08 remediation: Limit OTP generation requests to 5 per
-    minute per remote address to reduce OTP abuse and brute forcing.
 
     The OTP is deliberately not logged or returned to the client.
     """
@@ -142,19 +135,7 @@ def request_otp():
         "phone": phone,
     })
 
-
-def create_app():
-    """Create and configure the Flask application."""
-    app = Flask(__name__)
-
-    # ============================================================
-    # REMEDIATION BLOCK: Flask-Limiter application initialization
-    #
-    # Attach the shared limiter to this Flask application so the
-    # @limiter.limit(...) decorators above are enforced.
-    # ============================================================
-    limiter.init_app(app)
-
-    app.register_blueprint(auth_bp, url_prefix="/v1/auth")
-
-    return app
+# REMEDIATION START: V-APP-08 App Initialization
+# Removed the local create_app() function entirely. Application initialization 
+# is strictly handled by services/payments-api/app/main.py[cite: 21, 22].
+# REMEDIATION END
