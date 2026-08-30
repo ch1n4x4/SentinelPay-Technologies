@@ -26,19 +26,26 @@ def create_app():
     def health():
         return jsonify({"status": "ok", "service": "payments-api"})
 
+    # ============================================================
+    # REMEDIATION BLOCK: Secure error handling
+    #
+    # Log the full exception server-side for troubleshooting, but
+    # return only a generic error message to the client. This prevents
+    # stack traces, database details, file paths, and other internal
+    # implementation information from being exposed through API
+    # responses.
+    # ============================================================
     @app.errorhandler(Exception)
     def handle_exception(e):
-        # V-APP-09: Verbose error response leaks stack details
-        import traceback
+        app.logger.exception("Unhandled application exception")
         return jsonify({
-            "error": str(e),
-            "type": type(e).__name__,
-            "trace": traceback.format_exc()
+            "error": "internal server error"
         }), 500
+
 
     return app
 
-
+# change debug=True to debug=False
 if __name__ == "__main__":
     app = create_app()
-    app.run(host="0.0.0.0", port=8001, debug=True)
+    app.run(host="0.0.0.0", port=8001, debug=False)
