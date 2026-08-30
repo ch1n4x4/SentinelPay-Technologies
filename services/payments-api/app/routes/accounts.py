@@ -70,26 +70,59 @@ def list_accounts():
 def update_profile(account_id):
     """Update account profile fields.
 
-    V-APP-07: Mass assignment. The update accepts an arbitrary dict and writes
-    every key the client provides, including 'status', 'user_id', and 'balance'.
-    A merchant can transfer an account to themselves or set their balance.
+    V-APP-07(Mass Assignment) Fixed:
+    Enforce a strict allowlist of modifiable fields and reject requests containing
+    unauthorized keys. Combined with V-APP-03 IDOR fix in the SQL statement.
     """
+    # REMEDIATION START: V-APP-07 Strict field allowlisting
+    ALLOWED_FIELDS = {
+        "account_number",
+        "currency",
+    }
+
     data = request.get_json() or {}
+
+    unknown = set(data) - ALLOWED_FIELDS
+    if unknown:
+        return jsonify({
+            "error": "unsupported fields",
+            "fields": sorted(unknown),
+        }), 400
+
+    if not data:
+        return jsonify({"error": "no fields supplied"}), 400
+    # REMEDIATION END
+
     conn = get_connection()
     cur = conn.cursor()
     try:
-        # Build dynamic SET clause from whatever the client sent
-        if not data:
-            return jsonify({"error": "no fields supplied"}), 400
+        # REMEDIATION START: Safely parameterizing only allowed fields
+        set_clause = ", ".join(f"{field} = %s" for field in data)
+        values = [data[field] for field in data]
 
-        set_clause = ", ".join([f"{k} = %s" for k in data.keys()])
-        values = list(data.values()) + [account_id]
-        # Note: this is intentionally a parameterised query for the *values*,
-        # but the column names are concatenated from user input — see V-APP-07.
-        # SQLi on column names is not the bug here; mass assignment is.
-        cur.execute(f"UPDATE accounts SET {set_clause} WHERE id = %s RETURNING *", values)
+        values.append(account_id)
+
+        # REMEDIATION START: V-APP-03 Enforcing ownership constraint during UPDATE
+        cur.execute(
+            f"""
+            UPDATE accounts
+            SET {set_clause}
+            WHERE id = %s
+              AND user_id = %s
+            RETURNING *
+            """,
+            values + [request.current_user_id],
+        )
+        # REMEDIATION END
+
         updated = cur.fetchone()
+        
+        # Handle cases where the IDOR constraint prevents the update
+        if not updated:
+            return jsonify({"error": "account not found or update unauthorized"}), 404
+            
         conn.commit()
+        
         # Convert Decimal to string so Flask can serialize it
         updated_dict = dict(updated)
         if 'balance' in updated_dict and updated_dict['balance'] is not None:
