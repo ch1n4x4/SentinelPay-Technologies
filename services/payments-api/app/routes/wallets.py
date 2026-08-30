@@ -52,10 +52,14 @@ def credit_wallet(account_id):
     cur = conn.cursor()
 
     try:
+        # REMEDIATION START: V-APP-03 Wallet Ownership Check
+        # Scoped the account lookup to include 'AND user_id = %s' to ensure
+        # callers cannot credit arbitrary accounts that do not belong to them[cite: 12].
         cur.execute(
-            "SELECT balance FROM accounts WHERE id = %s",
-            (account_id,),
+            "SELECT balance FROM accounts WHERE id = %s AND user_id = %s",
+            (account_id, request.current_user_id),
         )
+        # REMEDIATION END
 
         row = cur.fetchone()
 
@@ -138,21 +142,19 @@ def debit_wallet(account_id):
         with conn:
             with conn.cursor() as cur:
 
-                # Retrieve and lock the account row.
-                #
-                # IMPORTANT:
-                # The currency is read from the account rather than
-                # hard-coded so the application can support NGN,
-                # USD, EUR, GBP, or other supported currencies.
+                # REMEDIATION START: V-APP-03 Wallet Ownership Check
+                # Scoped the locked account lookup to include 'AND user_id = %s' 
+                # to prevent cross-account debit operations[cite: 12].
                 cur.execute(
                     """
                     SELECT balance, currency
                     FROM accounts
-                    WHERE id = %s
+                    WHERE id = %s AND user_id = %s
                     FOR UPDATE
                     """,
-                    (account_id,),
+                    (account_id, request.current_user_id),
                 )
+                # REMEDIATION END
 
                 row = cur.fetchone()
 

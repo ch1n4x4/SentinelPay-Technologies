@@ -4,27 +4,32 @@ import jwt
 from functools import wraps
 from flask import request, jsonify
 
-"""V-APP-02 (Broken JWT) Fixed:
-Use a strong server-side secret and only one permitted algorithm.
-"""
-JWT_SECRET = os.environ["JWT_SECRET"]
-JWT_ALGORITHM = "HS256"
+# REMEDIATION START: V-APP-02 (Broken JWT) Asymmetric Encryption
+# The KYC service acts as a token verifier. It now uses the public key 
+# to validate RS256 signatures, ensuring tokens were signed by the authorized 
+# issuing service. This prevents symmetric key leakage[cite: 7].
+JWT_PUBLIC_KEY = os.environ.get("JWT_PUBLIC_KEY", "")
+JWT_ALGORITHM = "RS256"
+# REMEDIATION END
 
 
 def decode_token(token: str) -> dict:
-    """Decode and cryptographically verify a JWT.
-
-    Only HS256 is accepted and signature verification is mandatory.
-    """
+    """Decode and cryptographically verify a JWT."""
+    # REMEDIATION START: Strict JWT Verification
+    # Enforces RS256 algorithm and verifies the signature using the public key[cite: 7].
+    # Explicitly requires the presence of 'exp' and 'iat' claims and validates
+    # token expiration automatically[cite: 7].
     return jwt.decode(
         token,
-        JWT_SECRET,
+        JWT_PUBLIC_KEY,
         algorithms=[JWT_ALGORITHM],
         options={
             "verify_signature": True,
-            "require": ["user_id", "role"],
+            "verify_exp": True,
+            "require": ["user_id", "role", "iat", "exp"],
         },
     )
+    # REMEDIATION END
 
 
 def require_auth(f):

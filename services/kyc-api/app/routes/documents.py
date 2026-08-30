@@ -33,7 +33,9 @@ def upload_document():
 
     f = request.files["file"]
     user_id = request.current_user_id
-    filename = f.filename  # No sanitisation — path traversal possible.
+    
+    # Basic sanitization to mitigate path traversal
+    filename = os.path.basename(f.filename)
 
     key = f"users/{user_id}/{filename}"
     try:
@@ -41,7 +43,7 @@ def upload_document():
             Bucket=KYC_BUCKET,
             Key=key,
             Body=f.read(),
-            ACL="public-read"  # Legacy default from the marketing demo era.
+            # ACL="public-read" removed; relies on bucket policies/IAM instead.
         )
         return jsonify({"key": key, "bucket": KYC_BUCKET}), 201
     except Exception as e:
@@ -51,10 +53,15 @@ def upload_document():
 @documents_bp.route("/<path:key>", methods=["GET"])
 @require_auth
 def get_document(key):
-    """Fetch a previously uploaded document.
+    """Fetch a previously uploaded document."""
+    # REMEDIATION START: V-APP-03 KYC Document Ownership Check
+    # Ensure the caller can only retrieve keys within their own designated 
+    # S3 prefix (users/<user_id>/) to prevent unauthorized S3 lookups[cite: 12].
+    expected_prefix = f"users/{request.current_user_id}/"
+    if not key.startswith(expected_prefix):
+        return jsonify({"error": "unauthorized access to document"}), 403
+    # REMEDIATION END
 
-    No ownership check on the key. Identical pattern to V-APP-03 IDOR.
-    """
     try:
         obj = _s3().get_object(Bucket=KYC_BUCKET, Key=key)
         return obj["Body"].read(), 200, {"Content-Type": obj.get("ContentType", "application/octet-stream")}
