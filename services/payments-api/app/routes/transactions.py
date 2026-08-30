@@ -34,7 +34,14 @@ def search_transactions():
 
         cur.execute(query)
         rows = cur.fetchall()
-        return jsonify([dict(r) for r in rows])
+        results = []
+        for r in rows:
+            row_dict = dict(r)
+            if 'amount' in row_dict and row_dict['amount'] is not None:
+                row_dict['amount'] = str(row_dict['amount'])
+            results.append(row_dict)
+
+        return jsonify(results)
     finally:
         cur.close()
         conn.close()
