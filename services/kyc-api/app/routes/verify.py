@@ -75,12 +75,18 @@ def lookup_kyc():
         conn.close()
 
 
-# REMEDIATION START: V-APP-11 KYC Audit Logging
-# Added a dedicated endpoint to process and strictly audit KYC status changes[cite: 27].
 @verify_bp.route("/<int:record_id>/status", methods=["PUT"])
 @require_auth
 def update_kyc_status(record_id):
     """Update the status of a KYC record and log the event."""
+    
+    # REMEDIATION START: V-APP-03 KYC Status Authorization Check
+    # Changing a KYC status is a privileged operation. We enforce an admin role 
+    # check here to ensure users cannot self-approve their own KYC documents[cite: 37].
+    if request.current_user_role != "admin":
+        return jsonify({"error": "admin only"}), 403
+    # REMEDIATION END
+
     data = request.get_json() or {}
     new_status = data.get("status")
     
@@ -114,4 +120,3 @@ def update_kyc_status(record_id):
     finally:
         cur.close()
         conn.close()
-# REMEDIATION END

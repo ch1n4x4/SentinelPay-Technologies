@@ -9,7 +9,8 @@ from app.audit import audit_event
 
 admin_bp = Blueprint("admin", __name__)
 
-SESSION_SIGNING_KEY = os.environ.get("SESSION_SIGNING_KEY", "sentinelpay-dev-secret")
+SESSION_SIGNING_KEY = os.environ["SESSION_SIGNING_KEY"]
+
 serializer = URLSafeTimedSerializer(
     SESSION_SIGNING_KEY,
     salt="sentinelpay-session",

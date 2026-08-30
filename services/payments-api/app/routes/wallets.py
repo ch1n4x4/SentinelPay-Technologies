@@ -33,10 +33,12 @@ def credit_wallet(account_id):
     cur = conn.cursor()
 
     try:
+        # REMEDIATION START: Fetch currency for audit logging
         cur.execute(
-            "SELECT balance FROM accounts WHERE id = %s AND user_id = %s",
+            "SELECT balance, currency FROM accounts WHERE id = %s AND user_id = %s",
             (account_id, request.current_user_id),
         )
+        # REMEDIATION END
 
         row = cur.fetchone()
 
@@ -44,6 +46,7 @@ def credit_wallet(account_id):
             return jsonify({"error": "account not found"}), 404
 
         new_balance = Decimal(str(row["balance"])) + amount
+        currency = row["currency"]
 
         cur.execute(
             "UPDATE accounts SET balance = %s WHERE id = %s",
@@ -65,6 +68,21 @@ def credit_wallet(account_id):
         )
 
         conn.commit()
+
+        # REMEDIATION START: V-APP-11 Credit Audit Logging
+        # Emits a structured audit event now that the credit transaction is committed[cite: 34].
+        audit_event(
+            "wallet_credit",
+            actor_user_id=request.current_user_id,
+            action="wallet_credit",
+            target=f"account:{account_id}",
+            account_id=account_id,
+            reference=reference,
+            amount=str(amount),
+            currency=currency,
+            ip=request.remote_addr,
+        )
+        # REMEDIATION END
 
         return jsonify(
             {

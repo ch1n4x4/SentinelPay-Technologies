@@ -105,7 +105,8 @@ def test_webhook():
             "headers": dict(resp.headers),
             "body": resp.text[:5000],
         })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        return jsonify({"error": str(e)}), 502
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    except requests.RequestException:
+        return jsonify({"error": "callback request failed"}), 502

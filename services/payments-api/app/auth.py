@@ -1,186 +1,113 @@
-"""Authentication helpers.
-
-NOTE TO MAINTAINERS: this module was last touched 14 months ago. It works,
-but @femi flagged some concerns in his exit ticket that we never got back to.
-See PR #284 (closed without merge).
-"""
-"""Authentication routes: registration, login, and OTP."""
+"""Authentication helpers."""
 import os
+from datetime import datetime, timedelta, timezone
+from functools import wraps
+from flask import request, jsonify
 
-from flask import Flask, Blueprint, request, jsonify
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
+import jwt
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
-from app.db import get_connection
-# Imported authenticate_user to handle the Argon2id migration-on-login
-from app.auth import hash_password, authenticate_user, issue_token
+JWT_PRIVATE_KEY = os.environ.get("JWT_PRIVATE_KEY", "")
+JWT_PUBLIC_KEY = os.environ.get("JWT_PUBLIC_KEY", "")
+JWT_ALGORITHM = "RS256"
 
-
-# ============================================================
-# REMEDIATION BLOCK: V-APP-08 - Rate limiting
-#
-# Use the client's remote IP address as the default rate-limit
-# key and store counters in Redis so limits are shared across
-# multiple application instances.
-# ============================================================
-limiter = Limiter(
-    key_func=get_remote_address,
-    storage_uri=os.getenv(
-        "RATELIMIT_STORAGE_URI",
-        "redis://redis:6379/2",
-    ),
-)
+password_hasher = PasswordHasher()
 
 
-auth_bp = Blueprint("auth", __name__)
+def hash_password(password: str) -> str:
+    return password_hasher.hash(password)
 
 
-@auth_bp.route("/register", methods=["POST"])
-def register():
-    """Register a new merchant account."""
-    data = request.get_json() or {}
-    email = data.get("email")
-    password = data.get("password")
-    full_name = data.get("full_name", "")
-
-    # REMEDIATION START: V-APP-07 Role Mass Assignment
-    # Never accept authorization roles from public registration[cite: 20].
-    # The role is strictly hardcoded to 'merchant' by the server. Admin 
-    # creation must be a separate, privileged internal workflow[cite: 20].
-    role = "merchant"
-    # REMEDIATION END
-
-    if not email or not password:
-        return jsonify({"error": "email and password required"}), 400
-
-    conn = get_connection()
-    cur = conn.cursor()
+def verify_password(password: str, stored_hash: str) -> bool:
     try:
-        cur.execute(
-            """
-            INSERT INTO users (email, password_hash, full_name, role)
-            VALUES (%s, %s, %s, %s)
-            RETURNING id
-            """,
-            (email, hash_password(password), full_name, role)
-        )
-        user_id = cur.fetchone()["id"]
-        conn.commit()
-        return jsonify({
-            "id": user_id,
-            "email": email,
-            "role": role,
-        }), 201
-    finally:
-        cur.close()
-        conn.close()
+        return password_hasher.verify(stored_hash, password)
+    except (VerifyMismatchError, InvalidHashError):
+        return False
 
 
-@auth_bp.route("/login", methods=["POST"])
-@limiter.limit("5/minute")
-def login():
-    """Authenticate a user and issue a JWT.
-
-    V-APP-08 remediation: Limit login attempts to 5 requests per
-    minute per remote address to reduce password brute-force attempts.
+# REMEDIATION START: V-APP-06 Legacy Hash Migration (Helper)
+# Recognizes existing legacy PBKDF2 hashes and, after successful verification, 
+# flags them for replacement with an Argon2id hash without breaking existing logins[cite: 36].
+def authenticate_user(password: str, stored_hash: str):
     """
-    data = request.get_json() or {}
-    email = data.get("email")
-    password = data.get("password")
+    Verify the password.
 
-    conn = get_connection()
-    cur = conn.cursor()
+    Returns:
+      False  -> authentication failed
+      True   -> current hash is valid and up to date
+      str    -> valid legacy hash that has been rehashed
+    """
     try:
-        cur.execute(
-            "SELECT id, password_hash, role, is_active "
-            "FROM users WHERE email = %s",
-            (email,),
-        )
+        if password_hasher.verify(stored_hash, password):
+            if password_hasher.check_needs_rehash(stored_hash):
+                return password_hasher.hash(password)
+            return True
+    except (VerifyMismatchError, InvalidHashError):
+        pass
 
-        user = cur.fetchone()
-        
-        if not user:
-            return jsonify({"error": "invalid credentials"}), 401
+    # Support for legacy PBKDF2 hashes during migration window[cite: 36]
+    if stored_hash.startswith("pbkdf2:"):
+        from werkzeug.security import check_password_hash
+        if check_password_hash(stored_hash, password):
+            return password_hasher.hash(password)
 
-        # REMEDIATION START: Argon2id Migration-on-Login
-        # Use authenticate_user to verify the password. If it returns a string, 
-        # it means the hash was a legacy PBKDF2 hash (or an outdated Argon2 hash) 
-        # and has been successfully rehashed. We update the DB immediately.
-        auth_result = authenticate_user(password, user["password_hash"])
-        
-        if not auth_result:
-            return jsonify({"error": "invalid credentials"}), 401
-            
-        if isinstance(auth_result, str):
-            cur.execute(
-                "UPDATE users SET password_hash = %s WHERE id = %s", 
-                (auth_result, user["id"])
-            )
-            conn.commit()
-        # REMEDIATION END
-
-        if not user["is_active"]:
-            return jsonify({"error": "account suspended"}), 403
-
-        token = issue_token(user["id"], user["role"])
-
-        return jsonify({
-            "token": token,
-            "user_id": user["id"],
-            "role": user["role"],
-        })
-
-    finally:
-        cur.close()
-        conn.close()
+    return False
+# REMEDIATION END
 
 
-@auth_bp.route("/otp", methods=["POST"])
-@limiter.limit("5/minute")
-def request_otp():
-    """Request an OTP code for step-up authentication.
+def issue_token(user_id: int, role: str) -> str:
+    now = datetime.now(timezone.utc)
 
-    V-APP-08 remediation: Limit OTP generation requests to 5 per
-    minute per remote address to reduce OTP abuse and brute forcing.
+    payload = {
+        "user_id": user_id,
+        "role": role,
+        "iat": now,
+        "exp": now + timedelta(minutes=15),
+        "typ": "access",
+    }
 
-    The OTP is deliberately not logged or returned to the client.
-    """
-    import random
-
-    data = request.get_json() or {}
-    phone = data.get("phone")
-
-    otp = str(random.randint(100000, 999999))
-
-    # ============================================================
-    # REMEDIATION BLOCK: V-APP-08 / OTP security
-    #
-    # Do not log the generated OTP. Logging OTP values would expose
-    # authentication secrets through application/container logs.
-    #
-    # Send the OTP through the application's approved SMS provider
-    # here instead.
-    # ============================================================
-    # send_otp_sms(phone, otp)
-
-    return jsonify({
-        "status": "sent",
-        "phone": phone,
-    })
+    token = jwt.encode(
+        payload,
+        JWT_PRIVATE_KEY,
+        algorithm=JWT_ALGORITHM,
+    )
+    return token.decode("utf-8") if isinstance(token, bytes) else token
 
 
-def create_app():
-    """Create and configure the Flask application."""
-    app = Flask(__name__)
+def decode_token(token: str) -> dict:
+    return jwt.decode(
+        token,
+        JWT_PUBLIC_KEY,
+        algorithms=[JWT_ALGORITHM],
+        options={
+            "verify_signature": True,
+            "verify_exp": True,
+            "require": [
+                "user_id",
+                "role",
+                "iat",
+                "exp",
+            ],
+        },
+    )
 
-    # ============================================================
-    # REMEDIATION BLOCK: Flask-Limiter application initialization
-    #
-    # Attach the shared limiter to this Flask application so the
-    # @limiter.limit(...) decorators above are enforced.
-    # ============================================================
-    limiter.init_app(app)
 
-    app.register_blueprint(auth_bp, url_prefix="/v1/auth")
+def require_auth(f):
+    """Decorator that extracts the current user from the Authorization header."""
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return jsonify({"error": "missing or malformed Authorization header"}), 401
 
-    return app
+        token = auth_header.replace("Bearer ", "")
+        try:
+            payload = decode_token(token)
+        except Exception as e:
+            return jsonify({"error": f"invalid token: {e}"}), 401
+
+        request.current_user_id = payload.get("user_id")
+        request.current_user_role = payload.get("role")
+        return f(*args, **kwargs)
+    return wrapper
