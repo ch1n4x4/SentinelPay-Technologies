@@ -38,6 +38,25 @@ def normalize_phone(value: str) -> str:
     # Canonical representation for phone number limits[cite: 41]
     return str(value).strip()
 
+def lookup_account_id_by_phone(phone: str):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute(
+            """
+            SELECT id
+            FROM users
+            WHERE phone = %s
+            """,
+            (phone,),
+        )
+        row = cur.fetchone()
+        return row["id"] if row else None
+    finally:
+        cur.close()
+        conn.close()
+
 def get_otp_account_limit_key():
     data = request.get_json(silent=True) or {}
     phone = normalize_phone(data.get("phone", ""))
