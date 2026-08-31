@@ -8,7 +8,7 @@ from flask import request, jsonify
 # The KYC service acts as a token verifier. It now uses the public key 
 # to validate RS256 signatures, ensuring tokens were signed by the authorized 
 # issuing service. This prevents symmetric key leakage[cite: 7].
-JWT_PUBLIC_KEY = os.environ.get("JWT_PUBLIC_KEY", "")
+JWT_PUBLIC_KEY = os.environ["JWT_PUBLIC_KEY"]
 JWT_ALGORITHM = "RS256"
 # REMEDIATION END
 

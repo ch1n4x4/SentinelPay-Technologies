@@ -1,5 +1,10 @@
 """Authentication helpers."""
 import os
+# REMEDIATION START: V-APP-06 Legacy MD5 Migration
+# Imported hashlib and secrets to securely compare legacy MD5 hashes[cite: 40].
+import hashlib
+import secrets
+# REMEDIATION END
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from flask import request, jsonify
@@ -8,8 +13,8 @@ import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
-JWT_PRIVATE_KEY = os.environ.get("JWT_PRIVATE_KEY", "")
-JWT_PUBLIC_KEY = os.environ.get("JWT_PUBLIC_KEY", "")
+JWT_PRIVATE_KEY = os.environ["JWT_PRIVATE_KEY"]
+JWT_PUBLIC_KEY = os.environ["JWT_PUBLIC_KEY"]
 JWT_ALGORITHM = "RS256"
 
 password_hasher = PasswordHasher()
@@ -28,7 +33,7 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
 # REMEDIATION START: V-APP-06 Legacy Hash Migration (Helper)
 # Recognizes existing legacy PBKDF2 hashes and, after successful verification, 
-# flags them for replacement with an Argon2id hash without breaking existing logins[cite: 36].
+# flags them for replacement with an Argon2id hash without breaking existing logins.
 def authenticate_user(password: str, stored_hash: str):
     """
     Verify the password.
@@ -46,11 +51,27 @@ def authenticate_user(password: str, stored_hash: str):
     except (VerifyMismatchError, InvalidHashError):
         pass
 
-    # Support for legacy PBKDF2 hashes during migration window[cite: 36]
+    # Support for legacy PBKDF2 hashes during migration window
     if stored_hash.startswith("pbkdf2:"):
         from werkzeug.security import check_password_hash
         if check_password_hash(stored_hash, password):
             return password_hasher.hash(password)
+
+    # REMEDIATION START: V-APP-06 Legacy MD5 Migration
+    # Explicitly support the known legacy MD5 format during the migration window 
+    # to migrate actual seeded legacy users[cite: 40]. This compatibility check 
+    # should be removed after all legacy hashes have migrated[cite: 40].
+    if len(stored_hash) == 32 and all(
+        c in "0123456789abcdef"
+        for c in stored_hash.lower()
+    ):
+        md5_hash = hashlib.md5(
+            password.encode("utf-8")
+        ).hexdigest()
+
+        if secrets.compare_digest(md5_hash, stored_hash.lower()):
+            return password_hasher.hash(password)
+    # REMEDIATION END
 
     return False
 # REMEDIATION END

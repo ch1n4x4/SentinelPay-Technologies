@@ -1,33 +1,60 @@
 """Authentication routes: registration, login, OTP, and token refresh."""
 import secrets
+import hashlib
 from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, jsonify
 
-# REMEDIATION START: V-APP-08 Shared Limiter Integration
-# Uses the single shared instance imported from the extensions module[cite: 39].
 from app.extensions import limiter
-from flask_limiter.util import get_remote_address
-# REMEDIATION END
-
 from app.db import get_connection
 from app.auth import hash_password, authenticate_user, issue_token
+
+# REMEDIATION START: V-APP-08 Rate Limiting
+# Imported get_remote_address to use as the fallback IP bucket identifier[cite: 41].
+from flask_limiter.util import get_remote_address
+# REMEDIATION END
 
 auth_bp = Blueprint("auth", __name__)
 
 
-# REMEDIATION START: V-APP-08 Rate Limiting Bucket Fix
-# Dedicated key functions validate the account identifier before evaluation[cite: 39].
-# If an email or phone number is missing/malformed, the limiter falls back to 
-# the remote IP address. This prevents all malformed requests from collapsing 
-# into a single, global empty-string bucket[cite: 39].
-def get_email_limit_key():
-    data = request.get_json() or {}
-    return data.get("email") or get_remote_address()
+# REMEDIATION START: V-APP-08 Rate Limiting Bucket Fix (Normalization)
+# Normalize the email and phone identifiers before evaluation to prevent bucket 
+# bypasses using case or whitespace variations[cite: 41]. Added prefixes to 
+# explicitly separate the account buckets from the IP fallback buckets[cite: 41].
 
+def normalize_email(value: str) -> str:
+    return value.strip().lower()
+
+def get_email_limit_key():
+    data = request.get_json(silent=True) or {}
+    email = data.get("email")
+
+    if not email:
+        return f"ip:{get_remote_address()}"
+
+    return f"account:{normalize_email(email)}"
+
+
+def normalize_phone(value: str) -> str:
+    # Canonical representation for phone number limits[cite: 41]
+    return str(value).strip()
 
 def get_phone_limit_key():
-    data = request.get_json() or {}
-    return data.get("phone") or get_remote_address()
+    data = request.get_json(silent=True) or {}
+    phone = data.get("phone")
+
+    if not phone:
+        return f"ip:{get_remote_address()}"
+
+    return f"phone:{normalize_phone(phone)}"
+
+# REMEDIATION END
+
+
+# REMEDIATION START: V-APP-02 Secure Refresh Token Hashing
+# Hash the refresh token using SHA-256 before database storage to prevent 
+# plaintext credential exposure if the database is compromised.
+def hash_refresh_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 # REMEDIATION END
 
 
@@ -70,7 +97,7 @@ def register():
 @limiter.limit("5/minute")
 @limiter.limit("5/minute", key_func=get_email_limit_key)
 def login():
-    """Authenticate a user and issue a JWT alongside a refresh token."""
+    """Authenticate a user and issue a JWT alongside a secure refresh token."""
     data = request.get_json() or {}
     email = data.get("email")
     password = data.get("password")
@@ -109,13 +136,21 @@ def login():
 
         access_token = issue_token(user["id"], user["role"])
         refresh_token = secrets.token_urlsafe(64)
+        
+        # REMEDIATION START: V-APP-02 Store Refresh Token Hash
+        # Store the SHA-256 hash of the refresh token instead of the plaintext token.
+        token_hash = hash_refresh_token(refresh_token)
         expires_at = datetime.now(timezone.utc) + timedelta(days=7)
         
         cur.execute(
-            "INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES (%s, %s, %s)",
-            (user["id"], refresh_token, expires_at)
+            """
+            INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
+            VALUES (%s, %s, %s)
+            """,
+            (user["id"], token_hash, expires_at),
         )
         conn.commit()
+        # REMEDIATION END
 
         return jsonify({
             "token": access_token,
@@ -142,9 +177,18 @@ def refresh():
     conn = get_connection()
     cur = conn.cursor()
     try:
+        # REMEDIATION START: V-APP-02 Verify Refresh Token Hash and Revocation Status
+        # Look up the token by its SHA-256 hash and ensure it has not been revoked.
+        token_hash = hash_refresh_token(token)
+        
         cur.execute(
-            "SELECT user_id, expires_at FROM refresh_tokens WHERE token = %s",
-            (token,)
+            """
+            SELECT user_id, expires_at
+            FROM refresh_tokens
+            WHERE token_hash = %s
+              AND revoked_at IS NULL
+            """,
+            (token_hash,),
         )
         row = cur.fetchone()
         
@@ -153,8 +197,13 @@ def refresh():
             
         user_id = row["user_id"]
         
-        cur.execute("DELETE FROM refresh_tokens WHERE token = %s", (token,))
-        
+        # Revoke the used refresh token (rotation) by updating revoked_at
+        cur.execute(
+            "UPDATE refresh_tokens SET revoked_at = NOW() WHERE token_hash = %s",
+            (token_hash,)
+        )
+        # REMEDIATION END
+
         cur.execute("SELECT role, is_active FROM users WHERE id = %s", (user_id,))
         user = cur.fetchone()
         
@@ -163,11 +212,15 @@ def refresh():
             
         new_access_token = issue_token(user_id, user["role"])
         new_refresh_token = secrets.token_urlsafe(64)
+        new_new_token_hash = hash_refresh_token(new_refresh_token)
         new_expires = datetime.now(timezone.utc) + timedelta(days=7)
         
         cur.execute(
-            "INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES (%s, %s, %s)",
-            (user_id, new_refresh_token, new_expires)
+            """
+            INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
+            VALUES (%s, %s, %s)
+            """,
+            (user_id, new_new_token_hash, new_expires)
         )
         conn.commit()
         

@@ -46,8 +46,9 @@ def upload_document():
             # ACL="public-read" removed; relies on bucket policies/IAM instead.
         )
         return jsonify({"key": key, "bucket": KYC_BUCKET}), 201
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        current_app.logger.exception("KYC document operation failed")
+        return jsonify({"error": "document operation failed"}), 500
 
 
 @documents_bp.route("/<path:key>", methods=["GET"])

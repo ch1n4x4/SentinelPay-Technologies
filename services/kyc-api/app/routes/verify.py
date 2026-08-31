@@ -40,8 +40,9 @@ def verify_bvn():
             allow_redirects=False
         )
         return jsonify({"status": "ok", "provider_response": resp.text[:2000]})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except requests.RequestException:
+        current_app.logger.exception("KYC provider request failed")
+        return jsonify({"error": "KYC verification failed"}), 502
 
 
 @verify_bp.route("/lookup", methods=["GET"])
@@ -82,7 +83,7 @@ def update_kyc_status(record_id):
     
     # REMEDIATION START: V-APP-03 KYC Status Authorization Check
     # Changing a KYC status is a privileged operation. We enforce an admin role 
-    # check here to ensure users cannot self-approve their own KYC documents[cite: 37].
+    # check here to ensure users cannot self-approve their own KYC documents.
     if request.current_user_role != "admin":
         return jsonify({"error": "admin only"}), 403
     # REMEDIATION END
@@ -96,6 +97,18 @@ def update_kyc_status(record_id):
     conn = get_connection()
     cur = conn.cursor()
     try:
+        # REMEDIATION START: V-APP-03 Server-Side Role Verification
+        # Verify the role from the database rather than blindly trusting the JWT claim[cite: 37].
+        cur.execute(
+            "SELECT role FROM users WHERE id = %s",
+            (request.current_user_id,)
+        )
+        user = cur.fetchone()
+        
+        if not user or user["role"] != "admin":
+            return jsonify({"error": "admin only"}), 403
+        # REMEDIATION END
+
         cur.execute("SELECT status FROM kyc_records WHERE id = %s", (record_id,))
         row = cur.fetchone()
         
