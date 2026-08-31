@@ -95,8 +95,12 @@ def issue_token(user_id: int, role: str) -> str:
     )
     return token.decode("utf-8") if isinstance(token, bytes) else token
 
-
 def decode_token(token: str) -> dict:
+    header = jwt.get_unverified_header(token)
+
+    if header.get("alg") != JWT_ALGORITHM:
+        raise jwt.InvalidAlgorithmError("unexpected JWT algorithm")
+
     return jwt.decode(
         token,
         JWT_PUBLIC_KEY,

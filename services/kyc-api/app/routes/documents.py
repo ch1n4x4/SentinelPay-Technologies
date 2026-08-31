@@ -66,5 +66,12 @@ def get_document(key):
     try:
         obj = _s3().get_object(Bucket=KYC_BUCKET, Key=key)
         return obj["Body"].read(), 200, {"Content-Type": obj.get("ContentType", "application/octet-stream")}
-    except Exception as e:
-        return jsonify({"error": str(e)}), 404
+    except Exception:
+        current_app.logger.exception(
+            "KYC document retrieval failed",
+            extra={
+                "user_id": request.current_user_id,
+                "key": key,
+            },
+        )
+        return jsonify({"error": "document retrieval failed"}), 404

@@ -41,7 +41,8 @@ def test_wallet_debit_emits_required_audit_fields(
 
     assert event["actor_user_id"] == 3
     assert event["account_id"] == 3
-    assert event["action"] if "action" in event else True
+    assert event["action"] == "wallet_debit"
+    assert event["target"] == "account:3"
     assert "reference" in event
     assert "amount" in event
     assert "timestamp" in event

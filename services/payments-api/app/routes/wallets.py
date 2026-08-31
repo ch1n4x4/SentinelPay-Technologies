@@ -179,6 +179,8 @@ def debit_wallet(account_id):
         audit_event(
             "wallet_debit",
             actor_user_id=request.current_user_id,
+            action="wallet_debit",
+            target=f"account:{account_id}",
             account_id=account_id,
             reference=reference,
             amount=str(amount),

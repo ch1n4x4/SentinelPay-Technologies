@@ -14,11 +14,16 @@ JWT_ALGORITHM = "RS256"
 
 
 def decode_token(token: str) -> dict:
+    header = jwt.get_unverified_header(token)
     """Decode and cryptographically verify a JWT."""
     # REMEDIATION START: Strict JWT Verification
     # Enforces RS256 algorithm and verifies the signature using the public key[cite: 7].
     # Explicitly requires the presence of 'exp' and 'iat' claims and validates
     # token expiration automatically[cite: 7].
+
+    if header.get("alg") != JWT_ALGORITHM:
+        raise jwt.InvalidAlgorithmError("unexpected JWT algorithm")
+
     return jwt.decode(
         token,
         JWT_PUBLIC_KEY,
@@ -26,10 +31,16 @@ def decode_token(token: str) -> dict:
         options={
             "verify_signature": True,
             "verify_exp": True,
-            "require": ["user_id", "role", "iat", "exp"],
+            "require": [
+                "user_id",
+                "role",
+                "iat",
+                "exp",
+            ],
         },
     )
     # REMEDIATION END
+
 
 
 def require_auth(f):
