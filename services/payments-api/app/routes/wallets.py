@@ -76,14 +76,14 @@ def credit_wallet(account_id):
                 currency
             FROM accounts
             WHERE id = %s
-              AND user_id = %s
+            AND user_id = %s
+            FOR UPDATE
             """,
             (
                 account_id,
                 request.current_user_id,
             ),
         )
-
         row = cur.fetchone()
 
         if not row:
@@ -125,11 +125,13 @@ def credit_wallet(account_id):
                 account_id,
                 reference,
                 amount,
+                currency,
                 direction,
                 description,
                 status
             )
             VALUES (
+                %s,
                 %s,
                 %s,
                 %s,
@@ -142,6 +144,7 @@ def credit_wallet(account_id):
                 account_id,
                 reference,
                 amount,
+                currency,
                 description,
             ),
         )
@@ -311,12 +314,14 @@ def debit_wallet(account_id):
                         account_id,
                         reference,
                         amount,
+                        currency,
                         direction,
                         counterparty,
                         description,
                         status
                     )
                     VALUES (
+                        %s,
                         %s,
                         %s,
                         %s,
@@ -330,11 +335,12 @@ def debit_wallet(account_id):
                         account_id,
                         reference,
                         amount,
+                        currency,
                         counterparty,
                         description,
                     ),
                 )
-
+                
         # AUDIT:
         # This executes only after the transaction context exits successfully.
         audit_event(
