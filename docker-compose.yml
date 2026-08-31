@@ -13,12 +13,22 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./seed/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentinel} -d ${POSTGRES_DB:-sentinelpay}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7-alpine
     container_name: sentinelpay-redis
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   payments-api:
     build: ./services/payments-api
@@ -26,10 +36,12 @@ services:
     ports:
       - "8001:8001"
     environment:
-      DATABASE_URL: ${DATABASE_URL}
-      REDIS_URL: ${REDIS_URL}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://sentinel:sentinel123@postgres:5432/sentinelpay}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY}
       JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY}
+      RATE_LIMIT_KEY_SECRET: ${RATE_LIMIT_KEY_SECRET}
+      SESSION_SIGNING_KEY: ${SESSION_SIGNING_KEY}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_REGION: af-south-1

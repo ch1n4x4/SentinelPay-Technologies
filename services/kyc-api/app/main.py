@@ -1,6 +1,5 @@
 """SentinelPay KYC API — identity verification service."""
 import os
-import logging
 from flask import Flask, jsonify
 
 from app.routes.verify import verify_bp
@@ -9,7 +8,6 @@ from app.routes.documents import documents_bp
 
 def create_app():
     app = Flask(__name__)
-    app.config["JWT_SECRET"] = os.environ.get("JWT_SECRET", "sentinelpay-dev-secret")
 
     app.register_blueprint(verify_bp, url_prefix="/v1/verify")
     app.register_blueprint(documents_bp, url_prefix="/v1/documents")

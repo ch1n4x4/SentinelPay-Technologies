@@ -119,15 +119,15 @@ def update_kyc_status(record_id):
             return jsonify({"error": "admin only"}), 403
         # REMEDIATION END
 
-        cur.execute("SELECT status FROM kyc_records WHERE id = %s", (record_id,))
+        cur.execute("SELECT verification_status FROM kyc_records WHERE id = %s", (record_id,))
         row = cur.fetchone()
         
         if not row:
             return jsonify({"error": "record not found"}), 404
             
-        old_status = row["status"]
+        old_status = row["verification_status"]
         
-        cur.execute("UPDATE kyc_records SET status = %s WHERE id = %s", (new_status, record_id))
+        cur.execute("UPDATE kyc_records SET verification_status = %s WHERE id = %s", (new_status, record_id))
         conn.commit()
         
         audit_event(
