@@ -32,7 +32,7 @@ def get_email_limit_key():
 
 # REMEDIATION START: V-APP-08 Canonical Phone Normalization
 # Implemented a basic canonical parser to ensure equivalent representations of a 
-# phone number don't produce different lookup/rate-limit behavior[cite: 29].
+# phone number don't produce different lookup/rate-limit behavior[cite: 32].
 def canonicalize_phone(phone: str) -> str:
     """Project's canonical phone-number parser. Strips formatting."""
     return re.sub(r"[^\d+]", "", phone)
@@ -65,6 +65,7 @@ def lookup_account_id_by_phone(phone: str):
 
 def get_otp_account_limit_key():
     data = request.get_json(silent=True) or {}
+    # Uses the canonical value for the account lookup and limiter[cite: 32].
     phone = normalize_phone(data.get("phone", ""))
 
     account_id = lookup_account_id_by_phone(phone)
