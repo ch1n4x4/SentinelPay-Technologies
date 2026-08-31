@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS webhooks (
 INSERT INTO users (email, password_hash, full_name, role) VALUES
     ('admin@sentinelpay.io', '482c811da5d5b4bc6d497ffa98491e38', 'Adaeze Okonkwo', 'admin'),
     ('finance@sentinelpay.io', '78c2e10018a4fa37b4f4b5e62a8e90bb', 'Tunde Bakare', 'finance'),
-    ('merchant1@example.com', 'b25bfe3edaa1cbf65f0d3a92a7c5dac9', 'Lagos Foods Ltd', 'merchant'),
+    ('merchant1@example.com', '4d28813a87c581207f4c8a1cf2197718', 'Lagos Foods Ltd', 'merchant'),
     ('merchant2@example.com', 'b25bfe3edaa1cbf65f0d3a92a7c5dac9', 'Accra Logistics Co', 'merchant'),
     ('merchant3@example.com', 'b25bfe3edaa1cbf65f0d3a92a7c5dac9', 'Nairobi Tech Hub', 'merchant');
 

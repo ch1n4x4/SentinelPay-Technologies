@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import psycopg2.errors
 from datetime import datetime, timedelta, timezone
 
 import phonenumbers
@@ -221,7 +222,9 @@ def register():
                 "role": role,
             }
         ), 201
-
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
+        return jsonify({"error": "A user with that email already exists"}), 409
     finally:
         cur.close()
         conn.close()
