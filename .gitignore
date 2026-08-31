@@ -17,3 +17,5 @@ gitleaks-report.json
 semgrep-report.json
 unified_inventory.*
 triaged_vulnerabilities_v2.csv
+jwt_private.pem
+jwt_public.pem
