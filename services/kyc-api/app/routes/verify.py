@@ -1,7 +1,7 @@
 """Identity verification endpoints."""
 import os
 import requests
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 
 from app.db import get_connection
 from app.auth import require_auth

@@ -17,8 +17,10 @@ from app.extensions import limiter
 
 def create_app():
     app = Flask(__name__)
-    app.config["JWT_SECRET"] = os.environ.get("JWT_SECRET", "sentinelpay-dev-secret")
-    app.config["ENVIRONMENT"] = os.environ.get("ENVIRONMENT", "development")
+    app.config["ENVIRONMENT"] = os.environ.get(
+        "ENVIRONMENT",
+        "development",
+    )
 
     # REMEDIATION START: V-APP-08 App Initialization
     # Initialize the limiter on the actual application factory[cite: 21, 22].

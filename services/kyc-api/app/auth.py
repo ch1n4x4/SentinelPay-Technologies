@@ -48,6 +48,10 @@ def require_auth(f):
         try:
             payload = decode_token(token)
         except jwt.PyJWTError:
+            app.logger.warning(
+                "JWT validation failed",
+                exc_info=True,
+            )
             return jsonify({"error": "unauthorized"}), 401
 
         request.current_user_id = payload["user_id"]

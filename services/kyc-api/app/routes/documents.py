@@ -1,7 +1,7 @@
 """Document upload and retrieval for KYC submissions."""
 import os
 import boto3
-from flask import Blueprint, request, jsonify, send_file
+from flask import Blueprint, request, jsonify, current_app
 
 from app.auth import require_auth
 
