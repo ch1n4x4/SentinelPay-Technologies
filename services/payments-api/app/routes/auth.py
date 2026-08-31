@@ -1,24 +1,33 @@
 """Authentication routes: registration, login, OTP, and token refresh."""
-import re
-import secrets
+import os
+import hmac
 import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
+
+import phonenumbers
+from phonenumbers import NumberParseException
 from flask import Blueprint, request, jsonify
+from flask_limiter.util import get_remote_address
 
 from app.extensions import limiter
 from app.db import get_connection
 from app.auth import hash_password, authenticate_user, issue_token
 
-# REMEDIATION START: V-APP-08 Rate Limiting
-from flask_limiter.util import get_remote_address
-# REMEDIATION END
-
 auth_bp = Blueprint("auth", __name__)
 
 
-# REMEDIATION START: V-APP-08 Rate Limiting Bucket Fix (Normalization)
+# ===========================================================================
+# REMEDIATION START: V-APP-08 Canonical account identifiers for rate limiting
+# ===========================================================================
+PHONE_DEFAULT_REGION = os.environ.get("PHONE_DEFAULT_REGION", "NG")
+RATE_LIMIT_KEY_SECRET = os.environ.get("RATE_LIMIT_KEY_SECRET", "default-dev-secret-replace-me")
+
+
 def normalize_email(value: str) -> str:
-    return value.strip().lower()
+    """Return one canonical representation for account-level email limits."""
+    return value.strip().casefold()
+
 
 def get_email_limit_key():
     data = request.get_json(silent=True) or {}
@@ -30,21 +39,67 @@ def get_email_limit_key():
     return f"account:{normalize_email(email)}"
 
 
-# REMEDIATION START: V-APP-08 Canonical Phone Normalization
-# Implemented a basic canonical parser to ensure equivalent representations of a 
-# phone number don't produce different lookup/rate-limit behavior[cite: 32].
-def canonicalize_phone(phone: str) -> str:
-    """Project's canonical phone-number parser. Strips formatting."""
-    return re.sub(r"[^\d+]", "", phone)
-
-
 def normalize_phone(value: str) -> str:
-    phone = str(value).strip()
-    return canonicalize_phone(phone)
-# REMEDIATION END
+    """
+    Parse and canonicalize a phone number to E.164.
+
+    Examples of equivalent inputs such as:
+        +234 800 000 0000
+        +234-800-000-0000
+        0800 000 0000   (when PHONE_DEFAULT_REGION=NG)
+
+    become one canonical value.
+    """
+    if not isinstance(value, str):
+        raise ValueError("phone must be a string")
+
+    raw = value.strip()
+
+    if not raw:
+        raise ValueError("phone is required")
+
+    try:
+        parsed = phonenumbers.parse(
+            raw,
+            PHONE_DEFAULT_REGION if not raw.startswith("+") else None,
+        )
+    except NumberParseException as exc:
+        raise ValueError("invalid phone number") from exc
+
+    if not phonenumbers.is_possible_number(parsed):
+        raise ValueError("invalid phone number")
+
+    if not phonenumbers.is_valid_number(parsed):
+        raise ValueError("invalid phone number")
+
+    return phonenumbers.format_number(
+        parsed,
+        phonenumbers.PhoneNumberFormat.E164,
+    )
 
 
-def lookup_account_id_by_phone(phone: str):
+def _rate_limit_phone_key(phone_e164: str) -> str:
+    """
+    Deterministically derive a non-reversible rate-limit identifier.
+
+    Phone numbers are PII and should not be written directly into the
+    rate-limit backend key.
+    """
+    digest = hmac.new(
+        RATE_LIMIT_KEY_SECRET.encode("utf-8"),
+        phone_e164.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    return digest
+
+
+def lookup_account_id_by_phone(phone_e164: str):
+    """
+    Look up the canonical account using the canonical E.164 value.
+
+    The users.phone column must contain the same canonical E.164 form.
+    """
     conn = get_connection()
     cur = conn.cursor()
 
@@ -55,7 +110,7 @@ def lookup_account_id_by_phone(phone: str):
             FROM users
             WHERE phone = %s
             """,
-            (phone,),
+            (phone_e164,),
         )
         row = cur.fetchone()
         return row["id"] if row else None
@@ -63,19 +118,35 @@ def lookup_account_id_by_phone(phone: str):
         cur.close()
         conn.close()
 
-def get_otp_account_limit_key():
-    data = request.get_json(silent=True) or {}
-    # Uses the canonical value for the account lookup and limiter[cite: 32].
-    phone = normalize_phone(data.get("phone", ""))
 
-    account_id = lookup_account_id_by_phone(phone)
+def get_otp_account_limit_key():
+    """
+    Account-level OTP rate-limit key.
+
+    A valid phone number always maps to exactly one canonical E.164
+    representation before the account lookup, preventing formatting-based
+    limiter bypasses.
+    """
+    data = request.get_json(silent=True) or {}
+    raw_phone = data.get("phone", "")
+
+    try:
+        phone_e164 = normalize_phone(raw_phone)
+    except ValueError:
+        # Invalid requests still receive an IP-based bucket and will be
+        # rejected by the endpoint itself.
+        return f"ip:{get_remote_address()}"
+
+    account_id = lookup_account_id_by_phone(phone_e164)
 
     if account_id is None:
-        return f"unknown-phone:{phone}"
+        # Do not expose the raw phone number in Redis or another limiter store.
+        return f"unknown-phone:{_rate_limit_phone_key(phone_e164)}"
 
     return f"account:{account_id}"
-
-# REMEDIATION END
+# ===========================================================================
+# REMEDIATION END: V-APP-08 Canonical account identifiers for rate limiting
+# ===========================================================================
 
 
 # REMEDIATION START: V-APP-02 Secure Refresh Token Hashing
@@ -255,18 +326,27 @@ def refresh():
 
 
 @auth_bp.route("/otp", methods=["POST"])
+# REMEDIATION START: V-APP-08 Dual-dimension Rate Limiting + Canonicalization
+# Maintain the exact decorators for IP + canonical account scoping.
 @limiter.limit("5/minute")
 @limiter.limit("5/minute", key_func=get_otp_account_limit_key)
 def request_otp():
     """Request an OTP code for step-up authentication."""
-    import random
+    data = request.get_json(silent=True) or {}
+    raw_phone = data.get("phone")
 
-    data = request.get_json() or {}
-    phone = data.get("phone")
+    try:
+        # Canonicalize the phone before any further operation to ensure consistency.
+        phone = normalize_phone(raw_phone)
+    except ValueError:
+        return jsonify({"error": "valid phone number required"}), 400
 
-    otp = str(random.randint(100000, 999999))
+    # Generate/send the OTP using the canonical number.
+    # Replaced insecure 'random' module with secure 'secrets' module.
+    otp = f"{secrets.randbelow(900_000) + 100_000:06d}"
 
     return jsonify({
         "status": "sent",
         "phone": phone,
     })
+# REMEDIATION END
