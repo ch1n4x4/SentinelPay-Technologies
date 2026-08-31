@@ -38,14 +38,16 @@ def normalize_phone(value: str) -> str:
     # Canonical representation for phone number limits[cite: 41]
     return str(value).strip()
 
-def get_phone_limit_key():
+def get_otp_account_limit_key():
     data = request.get_json(silent=True) or {}
-    phone = data.get("phone")
+    phone = normalize_phone(data.get("phone", ""))
 
-    if not phone:
-        return f"ip:{get_remote_address()}"
+    account_id = lookup_account_id_by_phone(phone)
 
-    return f"phone:{normalize_phone(phone)}"
+    if account_id is None:
+        return f"unknown-phone:{phone}"
+
+    return f"account:{account_id}"
 
 # REMEDIATION END
 
@@ -237,7 +239,7 @@ def refresh():
 
 @auth_bp.route("/otp", methods=["POST"])
 @limiter.limit("5/minute")
-@limiter.limit("5/minute", key_func=get_phone_limit_key)
+@limiter.limit("5/minute", key_func=get_otp_account_limit_key)
 def request_otp():
     """Request an OTP code for step-up authentication."""
     import random
