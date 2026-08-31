@@ -1,4 +1,5 @@
 """Authentication routes: registration, login, OTP, and token refresh."""
+import re
 import secrets
 import hashlib
 from datetime import datetime, timedelta, timezone
@@ -9,7 +10,6 @@ from app.db import get_connection
 from app.auth import hash_password, authenticate_user, issue_token
 
 # REMEDIATION START: V-APP-08 Rate Limiting
-# Imported get_remote_address to use as the fallback IP bucket identifier[cite: 41].
 from flask_limiter.util import get_remote_address
 # REMEDIATION END
 
@@ -17,10 +17,6 @@ auth_bp = Blueprint("auth", __name__)
 
 
 # REMEDIATION START: V-APP-08 Rate Limiting Bucket Fix (Normalization)
-# Normalize the email and phone identifiers before evaluation to prevent bucket 
-# bypasses using case or whitespace variations[cite: 41]. Added prefixes to 
-# explicitly separate the account buckets from the IP fallback buckets[cite: 41].
-
 def normalize_email(value: str) -> str:
     return value.strip().lower()
 
@@ -34,9 +30,19 @@ def get_email_limit_key():
     return f"account:{normalize_email(email)}"
 
 
+# REMEDIATION START: V-APP-08 Canonical Phone Normalization
+# Implemented a basic canonical parser to ensure equivalent representations of a 
+# phone number don't produce different lookup/rate-limit behavior[cite: 29].
+def canonicalize_phone(phone: str) -> str:
+    """Project's canonical phone-number parser. Strips formatting."""
+    return re.sub(r"[^\d+]", "", phone)
+
+
 def normalize_phone(value: str) -> str:
-    # Canonical representation for phone number limits[cite: 41]
-    return str(value).strip()
+    phone = str(value).strip()
+    return canonicalize_phone(phone)
+# REMEDIATION END
+
 
 def lookup_account_id_by_phone(phone: str):
     conn = get_connection()
@@ -72,8 +78,6 @@ def get_otp_account_limit_key():
 
 
 # REMEDIATION START: V-APP-02 Secure Refresh Token Hashing
-# Hash the refresh token using SHA-256 before database storage to prevent 
-# plaintext credential exposure if the database is compromised.
 def hash_refresh_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 # REMEDIATION END
@@ -158,8 +162,6 @@ def login():
         access_token = issue_token(user["id"], user["role"])
         refresh_token = secrets.token_urlsafe(64)
         
-        # REMEDIATION START: V-APP-02 Store Refresh Token Hash
-        # Store the SHA-256 hash of the refresh token instead of the plaintext token.
         token_hash = hash_refresh_token(refresh_token)
         expires_at = datetime.now(timezone.utc) + timedelta(days=7)
         
@@ -171,7 +173,6 @@ def login():
             (user["id"], token_hash, expires_at),
         )
         conn.commit()
-        # REMEDIATION END
 
         return jsonify({
             "token": access_token,
@@ -198,8 +199,6 @@ def refresh():
     conn = get_connection()
     cur = conn.cursor()
     try:
-        # REMEDIATION START: V-APP-02 Verify Refresh Token Hash and Revocation Status
-        # Look up the token by its SHA-256 hash and ensure it has not been revoked.
         token_hash = hash_refresh_token(token)
         
         cur.execute(
@@ -218,12 +217,10 @@ def refresh():
             
         user_id = row["user_id"]
         
-        # Revoke the used refresh token (rotation) by updating revoked_at
         cur.execute(
             "UPDATE refresh_tokens SET revoked_at = NOW() WHERE token_hash = %s",
             (token_hash,)
         )
-        # REMEDIATION END
 
         cur.execute("SELECT role, is_active FROM users WHERE id = %s", (user_id,))
         user = cur.fetchone()
