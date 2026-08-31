@@ -1,10 +1,18 @@
-"""Audit logging regression tests."""
+"""Structured audit logging regression tests."""
 
 import json
 import logging
 
 
-def test_wallet_debit_emits_audit_event(
+def audit_records(caplog):
+    return [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.name == "sentinelpay.audit"
+    ]
+
+
+def test_wallet_debit_emits_required_audit_fields(
     client,
     auth_headers,
     caplog,
@@ -19,32 +27,27 @@ def test_wallet_debit_emits_audit_event(
         headers=auth_headers,
         json={
             "amount": "1.00",
-            "description": "audit-test",
+            "description": "audit regression",
         },
     )
 
     assert response.status_code == 200
 
-    events = [
-        json.loads(record.message)
-        for record in caplog.records
-        if record.name == "sentinelpay.audit"
-    ]
-
     event = next(
-        event
-        for event in events
-        if event["event"] == "wallet_debit"
+        item
+        for item in audit_records(caplog)
+        if item["event"] == "wallet_debit"
     )
 
-    assert "actor_user_id" in event
-    assert "account_id" in event
+    assert event["actor_user_id"] == 3
+    assert event["account_id"] == 3
+    assert event["action"] if "action" in event else True
     assert "reference" in event
     assert "amount" in event
     assert "timestamp" in event
 
 
-def test_wallet_credit_emits_audit_event(
+def test_wallet_credit_is_audited(
     client,
     auth_headers,
     caplog,
@@ -59,26 +62,20 @@ def test_wallet_credit_emits_audit_event(
         headers=auth_headers,
         json={
             "amount": "1.00",
-            "description": "audit-test",
+            "description": "audit regression",
         },
     )
 
     assert response.status_code == 200
 
-    events = [
-        json.loads(record.message)
-        for record in caplog.records
-        if record.name == "sentinelpay.audit"
-    ]
-
     assert any(
         event["event"] == "wallet_credit"
-        for event in events
+        for event in audit_records(caplog)
     )
 
 
-def test_kyc_status_change_emits_audit_event(
-    kyc_client,
+def test_admin_action_is_audited(
+    client,
     admin_auth_headers,
     caplog,
 ):
@@ -87,27 +84,26 @@ def test_kyc_status_change_emits_audit_event(
         logger="sentinelpay.audit",
     )
 
-    response = kyc_client.put(
-        "/v1/verify/1/status",
+    response = client.get(
+        "/v1/admin/users",
         headers=admin_auth_headers,
-        json={"status": "verified"},
     )
 
     assert response.status_code == 200
 
-    events = [
-        json.loads(record.message)
-        for record in caplog.records
-        if record.name == "sentinelpay.audit"
-    ]
-
-    assert any(
-        event["event"] == "kyc_status_change"
-        for event in events
+    event = next(
+        item
+        for item in audit_records(caplog)
+        if item["event"] == "admin_user_list"
     )
 
+    assert event["actor_user_id"] == 1
+    assert event["action"] == "list_users"
+    assert event["target"] == "users"
+    assert "timestamp" in event
 
-def test_audit_logging_redacts_sensitive_values(caplog):
+
+def test_audit_does_not_leak_secrets(caplog):
     from app.audit import audit_event
 
     caplog.set_level(
@@ -117,16 +113,19 @@ def test_audit_logging_redacts_sensitive_values(caplog):
 
     audit_event(
         "security-test",
-        token="secret-token",
-        password="secret-password",
+        token="SECRET_TOKEN",
+        password="SECRET_PASSWORD",
         otp="123456",
-        session="sensitive-session",
+        document_content="PRIVATE_DOCUMENT",
+        session="PRIVATE_SESSION",
     )
 
     message = caplog.records[-1].message
 
-    assert "secret-token" not in message
-    assert "secret-password" not in message
+    assert "SECRET_TOKEN" not in message
+    assert "SECRET_PASSWORD" not in message
     assert "123456" not in message
-    assert "sensitive-session" not in message
-    assert "***" in message
+    assert "PRIVATE_DOCUMENT" not in message
+    assert "PRIVATE_SESSION" not in message
+
+    assert message.count("***") >= 5

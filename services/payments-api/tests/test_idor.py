@@ -1,70 +1,58 @@
-"""IDOR / authorization regression tests.
+"""IDOR / object-authorization regression tests."""
 
-These tests verify that an authenticated user cannot access or modify
-another user's resources.
-"""
-
-import pytest
+USER_1_ACCOUNT_ID = 3
+USER_2_ACCOUNT_ID = 5
+USER_2_TRANSACTION_REFERENCE = "TXN-2026-004"
 
 
-USER_A = {
-    "id": 3,
-    "email": "merchant1@example.com",
-    "account_id": 3,
-    "transaction_reference": "TXN-2026-001",
-}
-
-USER_B = {
-    "id": 4,
-    "email": "merchant2@example.com",
-    "account_id": 5,
-}
-
-
-@pytest.fixture
-def user_a_client(app):
-    return app.test_client()
-
-
-@pytest.fixture
-def user_b_client(app):
-    return app.test_client()
-
-
-def test_user_b_cannot_read_user_a_account(
-    user_b_client,
-    user_b_auth_headers,
+def test_user_cannot_read_another_users_account(
+    client,
+    user_1_header,
 ):
-    response = user_b_client.get(
-        f"/v1/accounts/{USER_A['account_id']}",
-        headers=user_b_auth_headers,
+    response = client.get(
+        f"/v1/accounts/{USER_2_ACCOUNT_ID}",
+        headers=user_1_header,
     )
 
     assert response.status_code in (403, 404)
 
 
-def test_user_b_cannot_update_user_a_account(
-    user_b_client,
-    user_b_auth_headers,
+def test_user_cannot_update_another_users_account(
+    client,
+    user_1_header,
 ):
-    response = user_b_client.put(
-        f"/v1/accounts/{USER_A['account_id']}/profile",
-        headers=user_b_auth_headers,
-        json={"currency": "USD"},
-    )
-
-    assert response.status_code in (403, 404)
-
-
-def test_user_b_cannot_debit_user_a_account(
-    user_b_client,
-    user_b_auth_headers,
-):
-    response = user_b_client.post(
-        f"/v1/wallets/{USER_A['account_id']}/debit",
-        headers=user_b_auth_headers,
+    response = client.put(
+        f"/v1/accounts/{USER_2_ACCOUNT_ID}/profile",
+        headers=user_1_header,
         json={
-            "amount": "1.00",
+            "currency": "USD",
+        },
+    )
+
+    assert response.status_code in (403, 404)
+
+
+def test_user_cannot_read_another_users_transaction(
+    client,
+    user_1_header,
+):
+    response = client.get(
+        f"/v1/transactions/{USER_2_TRANSACTION_REFERENCE}",
+        headers=user_1_header,
+    )
+
+    assert response.status_code in (403, 404)
+
+
+def test_user_cannot_credit_another_users_account(
+    client,
+    user_1_header,
+):
+    response = client.post(
+        f"/v1/wallets/{USER_2_ACCOUNT_ID}/credit",
+        headers=user_1_header,
+        json={
+            "amount": "100.00",
             "description": "IDOR regression",
         },
     )
@@ -72,15 +60,15 @@ def test_user_b_cannot_debit_user_a_account(
     assert response.status_code in (403, 404)
 
 
-def test_user_b_cannot_credit_user_a_account(
-    user_b_client,
-    user_b_auth_headers,
+def test_user_cannot_debit_another_users_account(
+    client,
+    user_1_header,
 ):
-    response = user_b_client.post(
-        f"/v1/wallets/{USER_A['account_id']}/credit",
-        headers=user_b_auth_headers,
+    response = client.post(
+        f"/v1/wallets/{USER_2_ACCOUNT_ID}/debit",
+        headers=user_1_header,
         json={
-            "amount": "1.00",
+            "amount": "50.00",
             "description": "IDOR regression",
         },
     )
@@ -88,26 +76,13 @@ def test_user_b_cannot_credit_user_a_account(
     assert response.status_code in (403, 404)
 
 
-def test_user_b_cannot_read_user_a_transaction(
-    user_b_client,
-    user_b_auth_headers,
+def test_non_admin_cannot_access_admin_user_list(
+    client,
+    user_1_header,
 ):
-    response = user_b_client.get(
-        f"/v1/transactions/{USER_A['transaction_reference']}",
-        headers=user_b_auth_headers,
-    )
-
-    assert response.status_code in (403, 404)
-
-
-def test_non_admin_cannot_change_kyc_status(
-    user_b_client,
-    user_b_auth_headers,
-):
-    response = user_b_client.put(
-        "/v1/verify/1/status",
-        headers=user_b_auth_headers,
-        json={"status": "verified"},
+    response = client.get(
+        "/v1/admin/users",
+        headers=user_1_header,
     )
 
     assert response.status_code == 403

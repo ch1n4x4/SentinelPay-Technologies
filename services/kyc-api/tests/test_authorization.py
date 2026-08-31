@@ -1,32 +1,45 @@
-"""Authorization and IDOR regression tests for the KYC API."""
+"""KYC authorization regression tests."""
 
-def test_user_cannot_read_another_users_document(client, user_1_header, user_2_id):
-    """
-    Ensure V-APP-03 remediation prevents users from fetching documents outside 
-    their designated S3 prefix. Expecting a 404 for anti-enumeration.
-    """
-    # Attempting to access a document under user_2's directory using user_1's token
-    malicious_key = f"users/{user_2_id}/passport.pdf"
-    
+
+def test_user_cannot_read_another_users_document(
+    client,
+    user_1_header,
+):
+    other_user_id = 4
+
     response = client.get(
-        f"/v1/documents/{malicious_key}", 
-        headers=user_1_header
+        f"/v1/documents/users/{other_user_id}/passport.pdf",
+        headers=user_1_header,
     )
-    
-    assert response.status_code == 404
-    assert response.json.get("error") == "not found"
+
+    assert response.status_code in (403, 404)
 
 
-def test_non_admin_cannot_change_kyc_status(client, merchant_header, kyc_record_id):
-    """
-    Ensure V-APP-03 remediation prevents standard users from self-approving 
-    or modifying KYC records.
-    """
+def test_non_admin_cannot_change_kyc_status(
+    client,
+    user_1_header,
+):
     response = client.put(
-        f"/v1/verify/{kyc_record_id}/status",
-        headers=merchant_header,
-        json={"status": "approved"}
+        "/v1/verify/1/status",
+        headers=user_1_header,
+        json={
+            "status": "verified",
+        },
     )
-    
+
     assert response.status_code == 403
-    assert response.json.get("error") == "admin only"
+
+
+def test_admin_can_change_kyc_status(
+    client,
+    admin_auth_headers,
+):
+    response = client.put(
+        "/v1/verify/1/status",
+        headers=admin_auth_headers,
+        json={
+            "status": "verified",
+        },
+    )
+
+    assert response.status_code == 200

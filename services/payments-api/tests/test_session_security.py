@@ -1,48 +1,110 @@
-"""Signed-session regression tests."""
+"""Signed-session security regression tests."""
+
+from datetime import datetime, timezone, timedelta
 
 from itsdangerous import URLSafeTimedSerializer
+
+
+SESSION_SALT = "sentinelpay-session"
 
 
 def test_tampered_session_is_rejected(
     client,
     admin_auth_headers,
-    session_signing_key,
+    monkeypatch,
 ):
+    key = "unit-test-session-signing-key"
+
     serializer = URLSafeTimedSerializer(
-        session_signing_key,
-        salt="sentinelpay-session",
+        key,
+        salt=SESSION_SALT,
     )
 
-    signed = serializer.dumps({
-        "user_id": 1,
-        "role": "admin",
-    })
+    signed = serializer.dumps(
+        {
+            "user_id": 1,
+            "role": "admin",
+        }
+    )
 
-    # Tamper with the signed payload.
+    # Modify the signed payload without recomputing the signature.
     tampered = signed[:-1] + (
         "A" if signed[-1] != "A" else "B"
+    )
+
+    monkeypatch.setenv(
+        "SESSION_SIGNING_KEY",
+        key,
     )
 
     response = client.post(
         "/v1/admin/session/restore",
         headers=admin_auth_headers,
-        json={"session": tampered},
+        json={
+            "session": tampered,
+        },
     )
 
     assert response.status_code == 400
     assert response.get_json()["error"] == "invalid session"
 
 
-def test_session_expiry_is_enforced(
+def test_valid_signed_session_is_accepted(
     client,
     admin_auth_headers,
 ):
-    # Use a serializer/test fixture configured with an expired payload.
-    # The endpoint must reject it rather than restore it.
+    serializer = URLSafeTimedSerializer(
+        "unit-test-session-signing-key",
+        salt=SESSION_SALT,
+    )
+
+    signed = serializer.dumps(
+        {
+            "user_id": 1,
+            "role": "admin",
+        }
+    )
+
     response = client.post(
         "/v1/admin/session/restore",
         headers=admin_auth_headers,
-        json={"session": "<expired-signed-session>"},
+        json={
+            "session": signed,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["restored"] is True
+
+
+def test_expired_session_is_rejected(
+    client,
+    admin_auth_headers,
+    monkeypatch,
+):
+    serializer = URLSafeTimedSerializer(
+        "unit-test-session-signing-key",
+        salt=SESSION_SALT,
+    )
+
+    signed = serializer.dumps(
+        {
+            "user_id": 1,
+            "role": "admin",
+        }
+    )
+
+    monkeypatch.setattr(
+        "time.time",
+        lambda: datetime.now(timezone.utc).timestamp() + 7200,
+    )
+
+    response = client.post(
+        "/v1/admin/session/restore",
+        headers=admin_auth_headers,
+        json={
+            "session": signed,
+        },
     )
 
     assert response.status_code == 400

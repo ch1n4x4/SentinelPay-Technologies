@@ -1,16 +1,25 @@
-"""Legacy-password migration regression tests."""
+"""Password hashing and legacy migration tests."""
 
 from argon2 import PasswordHasher
 
 
-def test_md5_password_is_migrated_to_argon2():
-    from app.auth import authenticate_user
+LEGACY_MD5_HASH = "482c811da5d5b4bc6d497ffa98491e38"
 
-    legacy_md5 = "482c811da5d5b4bc6d497ffa98491e38"
+
+def test_new_password_uses_argon2id():
+    from app.auth import hash_password
+
+    stored_hash = hash_password("Password123!")
+
+    assert stored_hash.startswith("$argon2id$")
+
+
+def test_legacy_md5_password_is_migrated():
+    from app.auth import authenticate_user
 
     result = authenticate_user(
         "password123",
-        legacy_md5,
+        LEGACY_MD5_HASH,
     )
 
     assert isinstance(result, str)
@@ -22,27 +31,27 @@ def test_md5_password_is_migrated_to_argon2():
         "password123",
     )
 
-    assert result.startswith("$argon2")
 
-
-def test_wrong_password_does_not_migrate_md5():
+def test_wrong_legacy_password_is_rejected():
     from app.auth import authenticate_user
 
-    legacy_md5 = "482c811da5d5b4bc6d497ffa98491e38"
-
     result = authenticate_user(
-        "definitely-wrong-password",
-        legacy_md5,
+        "wrong-password",
+        LEGACY_MD5_HASH,
     )
 
     assert result is False
 
 
-def test_current_argon2_hash_is_accepted():
-    from app.auth import authenticate_user
+def test_existing_argon2id_password_is_verified():
+    from app.auth import (
+        authenticate_user,
+        hash_password,
+    )
 
-    hasher = PasswordHasher()
-    stored_hash = hasher.hash("Password123!")
+    stored_hash = hash_password(
+        "Password123!",
+    )
 
     result = authenticate_user(
         "Password123!",
@@ -50,3 +59,15 @@ def test_current_argon2_hash_is_accepted():
     )
 
     assert result is True
+
+
+def test_legacy_hash_is_not_returned_after_successful_migration():
+    from app.auth import authenticate_user
+
+    result = authenticate_user(
+        "password123",
+        LEGACY_MD5_HASH,
+    )
+
+    assert result != LEGACY_MD5_HASH
+    assert result.startswith("$argon2id$")

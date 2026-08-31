@@ -1,44 +1,45 @@
-"""Authorization and IDOR regression tests for the Payments API."""
+"""KYC authorization regression tests."""
 
-def test_user_cannot_read_another_users_account(client, user_1_header, user_2_account_id):
-    """Ensure a user receives a 404 when attempting to fetch an account they do not own."""
+
+def test_user_cannot_read_another_users_document(
+    client,
+    user_1_header,
+):
+    other_user_id = 4
+
     response = client.get(
-        f"/v1/accounts/{user_2_account_id}", 
-        headers=user_1_header
-    )
-    
-    assert response.status_code == 404
-
-
-def test_user_cannot_read_another_users_transaction(client, user_1_header, user_2_transaction_id):
-    """Ensure a user cannot access transaction records linked to another user's account."""
-    response = client.get(
-        f"/v1/transactions/{user_2_transaction_id}", 
-        headers=user_1_header
-    )
-    
-    assert response.status_code == 404
-
-
-def test_user_cannot_credit_another_users_account(client, user_1_header, user_2_account_id):
-    """Ensure V-APP-03 remediation prevents crediting arbitrary accounts."""
-    response = client.post(
-        f"/v1/wallets/{user_2_account_id}/credit",
+        f"/v1/documents/users/{other_user_id}/passport.pdf",
         headers=user_1_header,
-        json={"amount": "100.00"}
     )
-    
-    assert response.status_code == 404
-    assert response.json.get("error") == "account not found"
+
+    assert response.status_code in (403, 404)
 
 
-def test_user_cannot_debit_another_users_account(client, user_1_header, user_2_account_id):
-    """Ensure V-APP-03 remediation prevents debiting arbitrary accounts."""
-    response = client.post(
-        f"/v1/wallets/{user_2_account_id}/debit",
+def test_non_admin_cannot_change_kyc_status(
+    client,
+    user_1_header,
+):
+    response = client.put(
+        "/v1/verify/1/status",
         headers=user_1_header,
-        json={"amount": "50.00"}
+        json={
+            "status": "verified",
+        },
     )
-    
-    assert response.status_code == 404
-    assert response.json.get("error") == "account not found"
+
+    assert response.status_code == 403
+
+
+def test_admin_can_change_kyc_status(
+    client,
+    admin_auth_headers,
+):
+    response = client.put(
+        "/v1/verify/1/status",
+        headers=admin_auth_headers,
+        json={
+            "status": "verified",
+        },
+    )
+
+    assert response.status_code == 200

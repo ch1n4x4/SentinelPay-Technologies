@@ -1,30 +1,48 @@
-def test_concurrent_debits_leave_correct_balance(
+"""Wallet concurrency regression tests."""
+
+from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
+
+
+def test_concurrent_debits_do_not_overspend(
     authenticated_client_factory,
     get_account_balance,
 ):
-    starting_balance = get_account_balance(3)
+    account_id = 3
+    debit_amount = Decimal("180.00")
 
-    amount = "180.00"
+    starting_balance = get_account_balance(
+        account_id,
+    )
 
     def debit():
         client = authenticated_client_factory()
+
         return client.post(
-            "/v1/wallets/3/debit",
+            f"/v1/wallets/{account_id}/debit",
             json={
-                "amount": amount,
+                "amount": str(debit_amount),
                 "description": "concurrency regression",
             },
         )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         responses = list(
-            executor.map(lambda _: debit(), range(2))
+            executor.map(
+                lambda _: debit(),
+                range(2),
+            )
         )
 
     assert sorted(
-        response.status_code for response in responses
+        response.status_code
+        for response in responses
     ) == [200, 400]
 
-    final_balance = get_account_balance(3)
+    final_balance = get_account_balance(
+        account_id,
+    )
 
-    assert final_balance == starting_balance - 180
+    assert final_balance == (
+        starting_balance - debit_amount
+    )
