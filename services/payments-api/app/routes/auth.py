@@ -4,100 +4,180 @@ import hashlib
 import hmac
 import os
 import secrets
-from datetime import datetime, timedelta, timezone
+
+from datetime import (
+    datetime,
+    timedelta,
+    timezone,
+)
 
 import phonenumbers
-from phonenumbers import NumberParseException
-from flask import Blueprint, jsonify, request
-from flask_limiter.util import get_remote_address
 
-from app.auth import authenticate_user, hash_password, issue_token
+from phonenumbers import (
+    NumberParseException,
+)
+
+from flask import (
+    Blueprint,
+    jsonify,
+    request,
+)
+
+from flask_limiter.util import (
+    get_remote_address,
+)
+
+from app.auth import (
+    authenticate_user,
+    hash_password,
+    issue_token,
+)
+
 from app.db import get_connection
 from app.extensions import limiter
 
 
-auth_bp = Blueprint("auth", __name__)
+auth_bp = Blueprint(
+    "auth",
+    __name__,
+)
 
 
 # ============================================================================
-# V-APP-08: Canonical account identifiers for rate limiting
+# V-APP-08: CANONICAL ACCOUNT IDENTIFIERS
 # ============================================================================
+#
+# FUNCTIONALITY:
+# Authentication requests need deterministic account identities so equivalent
+# representations cannot bypass account-level rate limits.
+PHONE_DEFAULT_REGION = os.environ.get(
+    "PHONE_DEFAULT_REGION",
+    "NG",
+)
 
-# Default region used only for national-format numbers such as 0800...
-# Configure explicitly in deployment; NG is the application's current default.
-PHONE_DEFAULT_REGION = os.environ.get("PHONE_DEFAULT_REGION", "NG")
 
-# Mandatory secret used to derive non-reversible rate-limit keys for
-# unregistered phone numbers. Do NOT provide a hardcoded fallback.
-RATE_LIMIT_KEY_SECRET = os.environ["RATE_LIMIT_KEY_SECRET"]
+# SECURITY:
+# This secret is mandatory and has no hardcoded fallback. It is used for HMAC
+# bucketing of unknown phone numbers.
+RATE_LIMIT_KEY_SECRET = os.environ[
+    "RATE_LIMIT_KEY_SECRET"
+]
 
 
-def normalize_email(value: str) -> str:
-    """Return one canonical representation for account-level email limits."""
-    if not isinstance(value, str):
-        raise ValueError("email must be a string")
+def normalize_email(
+    value: str,
+) -> str:
+    """
+    Canonicalize an email address for account lookup/rate limiting.
+    """
+    if not isinstance(
+        value,
+        str,
+    ):
+        raise ValueError(
+            "email must be a string"
+        )
 
     normalized = value.strip().casefold()
 
     if not normalized:
-        raise ValueError("email is required")
+        raise ValueError(
+            "email is required"
+        )
 
     return normalized
 
 
 def get_email_limit_key():
     """
-    Return the account-level login/register bucket.
+    Return the account-scoped login/register bucket.
 
-    Known accounts are keyed by canonical email representation.
-    Requests without an email fall back to the IP bucket.
+    The standard limiter still provides IP-based throttling. This second
+    limiter makes repeated attacks against one email expensive even when
+    requests originate from different IP addresses.
     """
-    data = request.get_json(silent=True) or {}
-    email = data.get("email")
+    data = (
+        request.get_json(
+            silent=True
+        )
+        or {}
+    )
 
-    if not isinstance(email, str) or not email.strip():
-        return f"ip:{get_remote_address()}"
+    email = data.get(
+        "email"
+    )
 
-    return f"account:{normalize_email(email)}"
+    if (
+        not isinstance(
+            email,
+            str,
+        )
+        or not email.strip()
+    ):
+        return (
+            f"ip:{get_remote_address()}"
+        )
+
+    return (
+        f"account:"
+        f"{normalize_email(email)}"
+    )
 
 
-def normalize_phone(value: str) -> str:
+def normalize_phone(
+    value: str,
+) -> str:
     """
-    Parse and canonicalize a phone number to E.164.
+    Canonicalize a phone number as E.164.
 
-    Examples:
-        +234 800 000 0000
-        +234-800-000-0000
-        0800 000 0000
-
-    become one canonical representation when PHONE_DEFAULT_REGION=NG:
-        +2348000000000
-
-    Invalid or ambiguous phone numbers are rejected rather than normalized
-    into a potentially different identity.
+    This ensures different formatting of the same phone number maps to the
+    same account/rate-limit identity.
     """
-    if not isinstance(value, str):
-        raise ValueError("phone must be a string")
+    if not isinstance(
+        value,
+        str,
+    ):
+        raise ValueError(
+            "phone must be a string"
+        )
 
     raw = value.strip()
 
     if not raw:
-        raise ValueError("phone is required")
+        raise ValueError(
+            "phone is required"
+        )
 
     try:
-        # International numbers must include their country code.
-        # National numbers are interpreted using the configured default region.
-        region = None if raw.startswith("+") else PHONE_DEFAULT_REGION
+        region = (
+            None
+            if raw.startswith("+")
+            else PHONE_DEFAULT_REGION
+        )
 
-        parsed = phonenumbers.parse(raw, region)
+        parsed = phonenumbers.parse(
+            raw,
+            region,
+        )
+
     except NumberParseException as exc:
-        raise ValueError("invalid phone number") from exc
+        raise ValueError(
+            "invalid phone number"
+        ) from exc
 
-    if not phonenumbers.is_possible_number(parsed):
-        raise ValueError("invalid phone number")
+    if not phonenumbers.is_possible_number(
+        parsed
+    ):
+        raise ValueError(
+            "invalid phone number"
+        )
 
-    if not phonenumbers.is_valid_number(parsed):
-        raise ValueError("invalid phone number")
+    if not phonenumbers.is_valid_number(
+        parsed
+    ):
+        raise ValueError(
+            "invalid phone number"
+        )
 
     return phonenumbers.format_number(
         parsed,
@@ -105,27 +185,33 @@ def normalize_phone(value: str) -> str:
     )
 
 
-def _rate_limit_phone_key(phone_e164: str) -> str:
+def _rate_limit_phone_key(
+    phone_e164: str,
+) -> str:
     """
-    Derive a deterministic, non-reversible identifier for an unknown phone.
+    Generate a deterministic non-reversible bucket for unknown phone numbers.
 
-    Phone numbers are PII, so the raw canonical number is never placed
-    directly into the rate-limit backend.
+    The raw phone number is PII and therefore is not stored directly in the
+    rate-limit backend.
     """
     digest = hmac.new(
-        RATE_LIMIT_KEY_SECRET.encode("utf-8"),
-        phone_e164.encode("utf-8"),
+        RATE_LIMIT_KEY_SECRET.encode(
+            "utf-8"
+        ),
+        phone_e164.encode(
+            "utf-8"
+        ),
         hashlib.sha256,
     ).hexdigest()
 
     return f"phone:{digest}"
 
 
-def lookup_account_id_by_phone(phone_e164: str):
+def lookup_account_id_by_phone(
+    phone_e164: str,
+):
     """
-    Return the account ID associated with a canonical E.164 phone number.
-
-    The users.phone column must contain canonical E.164 values.
+    Find a known user's account identity from its canonical phone number.
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -155,69 +241,136 @@ def lookup_account_id_by_phone(phone_e164: str):
 
 def get_otp_account_limit_key():
     """
-    Return the account-scoped OTP rate-limit bucket.
+    Return the account-scoped OTP bucket.
 
-    Flow:
-        raw phone
-            -> canonical E.164
-            -> account lookup
-            -> account:<id>
-
-    Unknown but valid numbers use a deterministic HMAC-derived phone bucket,
-    so formatting changes cannot bypass the limiter.
-
-    Invalid phone requests fall back to IP because the endpoint itself rejects
-    invalid numbers before generating an OTP.
+    Known users are keyed by internal account ID. Unknown valid numbers use
+    an HMAC-derived phone bucket. Invalid numbers fall back to the IP bucket,
+    while the endpoint itself rejects the invalid number.
     """
-    data = request.get_json(silent=True) or {}
-    raw_phone = data.get("phone")
+    data = (
+        request.get_json(
+            silent=True
+        )
+        or {}
+    )
+
+    raw_phone = data.get(
+        "phone"
+    )
 
     try:
-        phone_e164 = normalize_phone(raw_phone)
+        phone_e164 = normalize_phone(
+            raw_phone
+        )
     except ValueError:
-        return f"ip:{get_remote_address()}"
+        return (
+            f"ip:{get_remote_address()}"
+        )
 
-    account_id = lookup_account_id_by_phone(phone_e164)
+    account_id = lookup_account_id_by_phone(
+        phone_e164
+    )
 
     if account_id is not None:
         return f"account:{account_id}"
 
-    return _rate_limit_phone_key(phone_e164)
+    return _rate_limit_phone_key(
+        phone_e164
+    )
 
 
 # ============================================================================
-# V-APP-02: Secure refresh-token hashing
+# V-APP-02: REFRESH-TOKEN STORAGE
+# ============================================================================
+#
+# SECURITY:
+# The refresh-token itself is a bearer credential. Only a SHA-256 digest is
+# stored in PostgreSQL so compromise of the database does not immediately
+# expose usable refresh credentials.
+def hash_refresh_token(
+    token: str,
+) -> str:
+    return hashlib.sha256(
+        token.encode("utf-8")
+    ).hexdigest()
+
+
+# ============================================================================
+# REGISTRATION
 # ============================================================================
 
-def hash_refresh_token(token: str) -> str:
-    """Hash a refresh token before storing or looking it up."""
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-# ============================================================================
-# Registration
-# ============================================================================
-
-@auth_bp.route("/register", methods=["POST"])
-@limiter.limit("5/minute")
-@limiter.limit("5/minute", key_func=get_email_limit_key)
+@auth_bp.route(
+    "/register",
+    methods=["POST"],
+)
+@limiter.limit(
+    "5/minute"
+)
+@limiter.limit(
+    "5/minute",
+    key_func=get_email_limit_key,
+)
 def register():
-    """Register a new merchant account."""
-    data = request.get_json(silent=True) or {}
+    """
+    Register a new merchant.
 
-    email = data.get("email")
-    password = data.get("password")
-    full_name = data.get("full_name", "")
+    REMEDIATION V-APP-07:
+    Public clients cannot choose their own authorization role. Registration
+    always creates the server-selected merchant role.
+    """
+    data = (
+        request.get_json(
+            silent=True
+        )
+        or {}
+    )
 
+    email = data.get(
+        "email"
+    )
+
+    password = data.get(
+        "password"
+    )
+
+    full_name = data.get(
+        "full_name",
+        "",
+    )
+
+    # SECURITY:
+    # Never accept role from client input.
     role = "merchant"
 
-    if not isinstance(email, str) or not email.strip():
-        return jsonify({"error": "email and password required"}), 400
+    if (
+        not isinstance(
+            email,
+            str,
+        )
+        or not email.strip()
+    ):
+        return jsonify({
+            "error": (
+                "email and password required"
+            )
+        }), 400
 
-    if not isinstance(password, str) or not password:
-        return jsonify({"error": "email and password required"}), 400
+    if (
+        not isinstance(
+            password,
+            str,
+        )
+        or not password
+    ):
+        return jsonify({
+            "error": (
+                "email and password required"
+            )
+        }), 400
 
-    email = normalize_email(email)
+    email = normalize_email(
+        email
+    )
 
     conn = get_connection()
     cur = conn.cursor()
@@ -231,27 +384,35 @@ def register():
                 full_name,
                 role
             )
-            VALUES (%s, %s, %s, %s)
+            VALUES (
+                %s,
+                %s,
+                %s,
+                %s
+            )
             RETURNING id
             """,
             (
                 email,
-                hash_password(password),
+                hash_password(
+                    password
+                ),
                 full_name,
                 role,
             ),
         )
 
-        user_id = cur.fetchone()["id"]
+        user_id = cur.fetchone()[
+            "id"
+        ]
+
         conn.commit()
 
-        return jsonify(
-            {
-                "id": user_id,
-                "email": email,
-                "role": role,
-            }
-        ), 201
+        return jsonify({
+            "id": user_id,
+            "email": email,
+            "role": role,
+        }), 201
 
     finally:
         cur.close()
@@ -259,26 +420,65 @@ def register():
 
 
 # ============================================================================
-# Login
+# LOGIN
 # ============================================================================
 
-@auth_bp.route("/login", methods=["POST"])
-@limiter.limit("5/minute")
-@limiter.limit("5/minute", key_func=get_email_limit_key)
+@auth_bp.route(
+    "/login",
+    methods=["POST"],
+)
+@limiter.limit(
+    "5/minute"
+)
+@limiter.limit(
+    "5/minute",
+    key_func=get_email_limit_key,
+)
 def login():
-    """Authenticate a user and issue an access token and refresh token."""
-    data = request.get_json(silent=True) or {}
+    """
+    Authenticate a user and issue access and refresh tokens.
 
-    email = data.get("email")
-    password = data.get("password")
+    REMEDIATION V-APP-06:
+    Successful legacy-password authentication is followed by immediate
+    persistence of the replacement Argon2id hash.
+    """
+    data = (
+        request.get_json(
+            silent=True
+        )
+        or {}
+    )
 
-    if not isinstance(email, str) or not email.strip():
-        return jsonify({"error": "invalid credentials"}), 401
+    email = data.get(
+        "email"
+    )
 
-    if not isinstance(password, str):
-        return jsonify({"error": "invalid credentials"}), 401
+    password = data.get(
+        "password"
+    )
 
-    email = normalize_email(email)
+    if (
+        not isinstance(
+            email,
+            str,
+        )
+        or not email.strip()
+    ):
+        return jsonify({
+            "error": "invalid credentials"
+        }), 401
+
+    if not isinstance(
+        password,
+        str,
+    ):
+        return jsonify({
+            "error": "invalid credentials"
+        }), 401
+
+    email = normalize_email(
+        email
+    )
 
     conn = get_connection()
     cur = conn.cursor()
@@ -300,7 +500,9 @@ def login():
         user = cur.fetchone()
 
         if not user:
-            return jsonify({"error": "invalid credentials"}), 401
+            return jsonify({
+                "error": "invalid credentials"
+            }), 401
 
         auth_result = authenticate_user(
             password,
@@ -308,11 +510,19 @@ def login():
         )
 
         if not auth_result:
-            return jsonify({"error": "invalid credentials"}), 401
+            return jsonify({
+                "error": "invalid credentials"
+            }), 401
 
-        # Legacy password migration:
-        # authenticate_user() may return a newly generated Argon2 hash.
-        if isinstance(auth_result, str):
+        # --------------------------------------------------------------------
+        # LEGACY PASSWORD MIGRATION
+        # --------------------------------------------------------------------
+        #
+        # A string return value represents a newly generated Argon2id hash.
+        if isinstance(
+            auth_result,
+            str,
+        ):
             cur.execute(
                 """
                 UPDATE users
@@ -325,16 +535,30 @@ def login():
                 ),
             )
 
-        if not user["is_active"]:
-            return jsonify({"error": "account suspended"}), 403
+        if not user[
+            "is_active"
+        ]:
+            return jsonify({
+                "error": "account suspended"
+            }), 403
 
         access_token = issue_token(
             user["id"],
             user["role"],
         )
 
-        refresh_token = secrets.token_urlsafe(64)
-        token_hash = hash_refresh_token(refresh_token)
+        # --------------------------------------------------------------------
+        # REFRESH TOKEN
+        # --------------------------------------------------------------------
+        #
+        # Generate a strong random bearer token. Persist only its digest.
+        refresh_token = (
+            secrets.token_urlsafe(64)
+        )
+
+        token_hash = hash_refresh_token(
+            refresh_token
+        )
 
         expires_at = (
             datetime.now(timezone.utc)
@@ -348,7 +572,11 @@ def login():
                 token_hash,
                 expires_at
             )
-            VALUES (%s, %s, %s)
+            VALUES (
+                %s,
+                %s,
+                %s
+            )
             """,
             (
                 user["id"],
@@ -359,14 +587,12 @@ def login():
 
         conn.commit()
 
-        return jsonify(
-            {
-                "token": access_token,
-                "refresh_token": refresh_token,
-                "user_id": user["id"],
-                "role": user["role"],
-            }
-        )
+        return jsonify({
+            "token": access_token,
+            "refresh_token": refresh_token,
+            "user_id": user["id"],
+            "role": user["role"],
+        })
 
     finally:
         cur.close()
@@ -374,31 +600,63 @@ def login():
 
 
 # ============================================================================
-# Refresh token
+# REFRESH TOKEN ROTATION
 # ============================================================================
 
-@auth_bp.route("/refresh", methods=["POST"])
-@limiter.limit("10/minute")
+@auth_bp.route(
+    "/refresh",
+    methods=["POST"],
+)
+@limiter.limit(
+    "10/minute"
+)
 def refresh():
     """
-    Exchange a valid refresh token for a new access token and rotate the
-    refresh credential.
-    """
-    data = request.get_json(silent=True) or {}
-    token = data.get("refresh_token")
+    Exchange a refresh token for a new token pair.
 
-    if not isinstance(token, str) or not token:
-        return jsonify({"error": "refresh_token required"}), 400
+    SECURITY:
+    A used refresh token is revoked before its replacement is persisted,
+    preventing simple replay of the original refresh credential.
+    """
+    data = (
+        request.get_json(
+            silent=True
+        )
+        or {}
+    )
+
+    token = data.get(
+        "refresh_token"
+    )
+
+    if (
+        not isinstance(
+            token,
+            str,
+        )
+        or not token
+    ):
+        return jsonify({
+            "error": (
+                "refresh_token required"
+            )
+        }), 400
 
     conn = get_connection()
     cur = conn.cursor()
 
     try:
-        token_hash = hash_refresh_token(token)
+        token_hash = (
+            hash_refresh_token(
+                token
+            )
+        )
 
         cur.execute(
             """
-            SELECT user_id, expires_at
+            SELECT
+                user_id,
+                expires_at
             FROM refresh_tokens
             WHERE token_hash = %s
               AND revoked_at IS NULL
@@ -409,17 +667,30 @@ def refresh():
         row = cur.fetchone()
 
         if not row:
-            return jsonify(
-                {"error": "invalid or expired refresh token"}
-            ), 401
+            return jsonify({
+                "error": (
+                    "invalid or expired "
+                    "refresh token"
+                )
+            }), 401
 
-        if row["expires_at"] < datetime.now(timezone.utc):
-            return jsonify(
-                {"error": "invalid or expired refresh token"}
-            ), 401
+        if row[
+            "expires_at"
+        ] < datetime.now(
+            timezone.utc
+        ):
+            return jsonify({
+                "error": (
+                    "invalid or expired "
+                    "refresh token"
+                )
+            }), 401
 
-        user_id = row["user_id"]
+        user_id = row[
+            "user_id"
+        ]
 
+        # Revoke the consumed credential.
         cur.execute(
             """
             UPDATE refresh_tokens
@@ -431,7 +702,9 @@ def refresh():
 
         cur.execute(
             """
-            SELECT role, is_active
+            SELECT
+                role,
+                is_active
             FROM users
             WHERE id = %s
             """,
@@ -440,20 +713,37 @@ def refresh():
 
         user = cur.fetchone()
 
-        if not user or not user["is_active"]:
+        if (
+            not user
+            or not user[
+                "is_active"
+            ]
+        ):
             conn.rollback()
-            return jsonify({"error": "account suspended"}), 403
+
+            return jsonify({
+                "error": "account suspended"
+            }), 403
 
         new_access_token = issue_token(
             user_id,
             user["role"],
         )
 
-        new_refresh_token = secrets.token_urlsafe(64)
-        new_token_hash = hash_refresh_token(new_refresh_token)
+        new_refresh_token = (
+            secrets.token_urlsafe(64)
+        )
+
+        new_token_hash = (
+            hash_refresh_token(
+                new_refresh_token
+            )
+        )
 
         new_expires = (
-            datetime.now(timezone.utc)
+            datetime.now(
+                timezone.utc
+            )
             + timedelta(days=7)
         )
 
@@ -464,7 +754,11 @@ def refresh():
                 token_hash,
                 expires_at
             )
-            VALUES (%s, %s, %s)
+            VALUES (
+                %s,
+                %s,
+                %s
+            )
             """,
             (
                 user_id,
@@ -475,14 +769,12 @@ def refresh():
 
         conn.commit()
 
-        return jsonify(
-            {
-                "token": new_access_token,
-                "refresh_token": new_refresh_token,
-                "user_id": user_id,
-                "role": user["role"],
-            }
-        )
+        return jsonify({
+            "token": new_access_token,
+            "refresh_token": new_refresh_token,
+            "user_id": user_id,
+            "role": user["role"],
+        })
 
     finally:
         cur.close()
@@ -493,49 +785,66 @@ def refresh():
 # OTP
 # ============================================================================
 
-@auth_bp.route("/otp", methods=["POST"])
-@limiter.limit("5/minute")
+@auth_bp.route(
+    "/otp",
+    methods=["POST"],
+)
+@limiter.limit(
+    "5/minute"
+)
 @limiter.limit(
     "5/minute",
     key_func=get_otp_account_limit_key,
 )
 def request_otp():
     """
-    Request an OTP code for step-up authentication.
+    Generate a step-up authentication OTP.
 
-    The phone number is canonicalized before use so formatting differences
-    cannot create separate account/rate-limit identities.
+    SECURITY:
+    Phone identifiers are canonicalized before rate limiting. OTP generation
+    uses a cryptographically secure random source, and plaintext OTP values
+    must never be written to logs.
     """
-    data = request.get_json(silent=True) or {}
-    raw_phone = data.get("phone")
+    data = (
+        request.get_json(
+            silent=True
+        )
+        or {}
+    )
+
+    raw_phone = data.get(
+        "phone"
+    )
 
     try:
-        phone = normalize_phone(raw_phone)
+        phone = normalize_phone(
+            raw_phone
+        )
+
     except ValueError:
-        return jsonify(
-            {"error": "valid phone number required"}
-        ), 400
+        return jsonify({
+            "error": (
+                "valid phone number required"
+            )
+        }), 400
 
-    # Cryptographically secure OTP generation.
-    otp = f"{secrets.randbelow(900_000) + 100_000:06d}"
+    otp = (
+        f"{secrets.randbelow(900_000) + 100_000:06d}"
+    )
 
-    # TODO:
-    # Persist only a hash of the OTP, with:
-    #   - short expiration
-    #   - single-use semantics
-    #   - verification-attempt limit
+    # FUNCTIONALITY:
+    # The production SMS integration belongs here.
+    #
+    # SECURITY:
+    # Persist only a hash of the OTP, give it a short expiration and enforce
+    # single-use/attempt limits. Never log the plaintext OTP.
     #
     # Example:
-    #
-    # otp_hash = hashlib.sha256(otp.encode("utf-8")).hexdigest()
-    # store_otp_hash(phone, otp_hash, expires_at=...)
+    # otp_hash = hashlib.sha256(
+    #     otp.encode("utf-8")
+    # ).hexdigest()
 
-    # Send the OTP through the application's SMS provider here.
-    # The plaintext OTP must never be logged.
-
-    return jsonify(
-        {
-            "status": "sent",
-            "phone": phone,
-        }
-    )
+    return jsonify({
+        "status": "otp_sent",
+        "phone": phone,
+    })

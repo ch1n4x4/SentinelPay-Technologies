@@ -1,33 +1,55 @@
 """Authentication helpers for the KYC API."""
+
 import os
-import jwt
+
 from functools import wraps
-from flask import request, jsonify
 
-# REMEDIATION START: V-APP-02 (Broken JWT) Asymmetric Encryption
-# The KYC service acts as a token verifier. It now uses the public key 
-# to validate RS256 signatures, ensuring tokens were signed by the authorized 
-# issuing service. This prevents symmetric key leakage[cite: 7].
-JWT_PUBLIC_KEY = os.environ["JWT_PUBLIC_KEY"]
+import jwt
+
+from flask import (
+    request,
+    jsonify,
+)
+
+
+# ============================================================================
+# V-APP-02: KYC JWT VERIFICATION
+# ============================================================================
+#
+# FUNCTIONALITY:
+# KYC only verifies tokens. It therefore receives the public RSA key and never
+# needs the private signing key.
+#
+# REMEDIATION:
+# Restrict verification to RS256 and reject unsigned/other-algorithm tokens.
+JWT_PUBLIC_KEY = os.environ[
+    "JWT_PUBLIC_KEY"
+]
+
 JWT_ALGORITHM = "RS256"
-# REMEDIATION END
 
 
-def decode_token(token: str) -> dict:
-    header = jwt.get_unverified_header(token)
-    """Decode and cryptographically verify a JWT."""
-    # REMEDIATION START: Strict JWT Verification
-    # Enforces RS256 algorithm and verifies the signature using the public key[cite: 7].
-    # Explicitly requires the presence of 'exp' and 'iat' claims and validates
-    # token expiration automatically[cite: 7].
+def decode_token(
+    token: str,
+) -> dict:
+    """
+    Cryptographically verify a KYC API access token.
+    """
+    header = jwt.get_unverified_header(
+        token
+    )
 
     if header.get("alg") != JWT_ALGORITHM:
-        raise jwt.InvalidAlgorithmError("unexpected JWT algorithm")
+        raise jwt.InvalidAlgorithmError(
+            "unexpected JWT algorithm"
+        )
 
     return jwt.decode(
         token,
         JWT_PUBLIC_KEY,
-        algorithms=[JWT_ALGORITHM],
+        algorithms=[
+            JWT_ALGORITHM
+        ],
         options={
             "verify_signature": True,
             "verify_exp": True,
@@ -39,32 +61,62 @@ def decode_token(token: str) -> dict:
             ],
         },
     )
-    # REMEDIATION END
-
 
 
 def require_auth(f):
-    """Require a valid, signed JWT in the Authorization header."""
+    """
+    Require a valid KYC JWT.
+
+    REMEDIATION V-APP-09:
+    Return generic 401 errors rather than exposing JWT validation internals.
+    """
     @wraps(f)
-    def wrapper(*args, **kwargs):
-        auth_header = request.headers.get("Authorization", "")
+    def wrapper(
+        *args,
+        **kwargs,
+    ):
+        auth_header = request.headers.get(
+            "Authorization",
+            "",
+        )
 
-        if not auth_header.startswith("Bearer "):
-            return jsonify({"error": "unauthorized"}), 401
+        if not auth_header.startswith(
+            "Bearer "
+        ):
+            return jsonify({
+                "error": "unauthorized"
+            }), 401
 
-        token = auth_header[len("Bearer "):].strip()
+        token = auth_header[
+            len("Bearer "):
+        ].strip()
 
         if not token:
-            return jsonify({"error": "unauthorized"}), 401
+            return jsonify({
+                "error": "unauthorized"
+            }), 401
 
         try:
-            payload = decode_token(token)
+            payload = decode_token(
+                token
+            )
+
         except jwt.PyJWTError:
-            return jsonify({"error": "unauthorized"}), 401
+            return jsonify({
+                "error": "unauthorized"
+            }), 401
 
-        request.current_user_id = payload["user_id"]
-        request.current_user_role = payload["role"]
+        request.current_user_id = (
+            payload["user_id"]
+        )
 
-        return f(*args, **kwargs)
+        request.current_user_role = (
+            payload["role"]
+        )
+
+        return f(
+            *args,
+            **kwargs,
+        )
 
     return wrapper
