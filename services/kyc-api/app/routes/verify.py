@@ -60,11 +60,21 @@ def lookup_kyc():
 
     try:
         if bvn:
-            query = "SELECT * FROM kyc_records WHERE bvn = %s"
-            params = (bvn,)
+            query = """
+                SELECT *
+                FROM kyc_records
+                WHERE bvn = %s
+                AND user_id = %s
+            """
+            params = (bvn, request.current_user_id)
         else:
-            query = "SELECT * FROM kyc_records WHERE nin = %s"
-            params = (nin,)
+            query = """
+                SELECT *
+                FROM kyc_records
+                WHERE nin = %s
+                AND user_id = %s
+            """
+            params = (nin, request.current_user_id)
 
         cur.execute(query, params)
         records = cur.fetchall()

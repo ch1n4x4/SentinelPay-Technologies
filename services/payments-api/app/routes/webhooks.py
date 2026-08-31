@@ -62,6 +62,10 @@ def register_webhook():
 
     if not callback_url:
         return jsonify({"error": "callback_url required"}), 400
+    try:
+        validate_callback_url(callback_url)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     conn = get_connection()
     cur = conn.cursor()
