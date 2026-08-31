@@ -1,39 +1,61 @@
 """Authentication routes: registration, login, OTP, and token refresh."""
-import os
-import hmac
+
 import hashlib
+import hmac
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
 import phonenumbers
 from phonenumbers import NumberParseException
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, jsonify, request
 from flask_limiter.util import get_remote_address
 
-from app.extensions import limiter
+from app.auth import authenticate_user, hash_password, issue_token
 from app.db import get_connection
-from app.auth import hash_password, authenticate_user, issue_token
+from app.extensions import limiter
+
 
 auth_bp = Blueprint("auth", __name__)
 
 
-# ===========================================================================
-# REMEDIATION START: V-APP-08 Canonical account identifiers for rate limiting
-# ===========================================================================
+# ============================================================================
+# V-APP-08: Canonical account identifiers for rate limiting
+# ============================================================================
+
+# Default region used only for national-format numbers such as 0800...
+# Configure explicitly in deployment; NG is the application's current default.
 PHONE_DEFAULT_REGION = os.environ.get("PHONE_DEFAULT_REGION", "NG")
-RATE_LIMIT_KEY_SECRET = os.environ.get("RATE_LIMIT_KEY_SECRET", "default-dev-secret-replace-me")
+
+# Mandatory secret used to derive non-reversible rate-limit keys for
+# unregistered phone numbers. Do NOT provide a hardcoded fallback.
+RATE_LIMIT_KEY_SECRET = os.environ["RATE_LIMIT_KEY_SECRET"]
 
 
 def normalize_email(value: str) -> str:
     """Return one canonical representation for account-level email limits."""
-    return value.strip().casefold()
+    if not isinstance(value, str):
+        raise ValueError("email must be a string")
+
+    normalized = value.strip().casefold()
+
+    if not normalized:
+        raise ValueError("email is required")
+
+    return normalized
 
 
 def get_email_limit_key():
+    """
+    Return the account-level login/register bucket.
+
+    Known accounts are keyed by canonical email representation.
+    Requests without an email fall back to the IP bucket.
+    """
     data = request.get_json(silent=True) or {}
     email = data.get("email")
 
-    if not email:
+    if not isinstance(email, str) or not email.strip():
         return f"ip:{get_remote_address()}"
 
     return f"account:{normalize_email(email)}"
@@ -43,12 +65,16 @@ def normalize_phone(value: str) -> str:
     """
     Parse and canonicalize a phone number to E.164.
 
-    Examples of equivalent inputs such as:
+    Examples:
         +234 800 000 0000
         +234-800-000-0000
-        0800 000 0000   (when PHONE_DEFAULT_REGION=NG)
+        0800 000 0000
 
-    become one canonical value.
+    become one canonical representation when PHONE_DEFAULT_REGION=NG:
+        +2348000000000
+
+    Invalid or ambiguous phone numbers are rejected rather than normalized
+    into a potentially different identity.
     """
     if not isinstance(value, str):
         raise ValueError("phone must be a string")
@@ -59,10 +85,11 @@ def normalize_phone(value: str) -> str:
         raise ValueError("phone is required")
 
     try:
-        parsed = phonenumbers.parse(
-            raw,
-            PHONE_DEFAULT_REGION if not raw.startswith("+") else None,
-        )
+        # International numbers must include their country code.
+        # National numbers are interpreted using the configured default region.
+        region = None if raw.startswith("+") else PHONE_DEFAULT_REGION
+
+        parsed = phonenumbers.parse(raw, region)
     except NumberParseException as exc:
         raise ValueError("invalid phone number") from exc
 
@@ -80,10 +107,10 @@ def normalize_phone(value: str) -> str:
 
 def _rate_limit_phone_key(phone_e164: str) -> str:
     """
-    Deterministically derive a non-reversible rate-limit identifier.
+    Derive a deterministic, non-reversible identifier for an unknown phone.
 
-    Phone numbers are PII and should not be written directly into the
-    rate-limit backend key.
+    Phone numbers are PII, so the raw canonical number is never placed
+    directly into the rate-limit backend.
     """
     digest = hmac.new(
         RATE_LIMIT_KEY_SECRET.encode("utf-8"),
@@ -91,14 +118,14 @@ def _rate_limit_phone_key(phone_e164: str) -> str:
         hashlib.sha256,
     ).hexdigest()
 
-    return digest
+    return f"phone:{digest}"
 
 
 def lookup_account_id_by_phone(phone_e164: str):
     """
-    Look up the canonical account using the canonical E.164 value.
+    Return the account ID associated with a canonical E.164 phone number.
 
-    The users.phone column must contain the same canonical E.164 form.
+    The users.phone column must contain canonical E.164 values.
     """
     conn = get_connection()
     cur = conn.cursor()
@@ -109,11 +136,18 @@ def lookup_account_id_by_phone(phone_e164: str):
             SELECT id
             FROM users
             WHERE phone = %s
+            LIMIT 1
             """,
             (phone_e164,),
         )
+
         row = cur.fetchone()
-        return row["id"] if row else None
+
+        if not row:
+            return None
+
+        return row["id"]
+
     finally:
         cur.close()
         conn.close()
@@ -121,90 +155,145 @@ def lookup_account_id_by_phone(phone_e164: str):
 
 def get_otp_account_limit_key():
     """
-    Account-level OTP rate-limit key.
+    Return the account-scoped OTP rate-limit bucket.
 
-    A valid phone number always maps to exactly one canonical E.164
-    representation before the account lookup, preventing formatting-based
-    limiter bypasses.
+    Flow:
+        raw phone
+            -> canonical E.164
+            -> account lookup
+            -> account:<id>
+
+    Unknown but valid numbers use a deterministic HMAC-derived phone bucket,
+    so formatting changes cannot bypass the limiter.
+
+    Invalid phone requests fall back to IP because the endpoint itself rejects
+    invalid numbers before generating an OTP.
     """
     data = request.get_json(silent=True) or {}
-    raw_phone = data.get("phone", "")
+    raw_phone = data.get("phone")
 
     try:
         phone_e164 = normalize_phone(raw_phone)
     except ValueError:
-        # Invalid requests still receive an IP-based bucket and will be
-        # rejected by the endpoint itself.
         return f"ip:{get_remote_address()}"
 
     account_id = lookup_account_id_by_phone(phone_e164)
 
-    if account_id is None:
-        # Do not expose the raw phone number in Redis or another limiter store.
-        return f"unknown-phone:{_rate_limit_phone_key(phone_e164)}"
+    if account_id is not None:
+        return f"account:{account_id}"
 
-    return f"account:{account_id}"
-# ===========================================================================
-# REMEDIATION END: V-APP-08 Canonical account identifiers for rate limiting
-# ===========================================================================
+    return _rate_limit_phone_key(phone_e164)
 
 
-# REMEDIATION START: V-APP-02 Secure Refresh Token Hashing
+# ============================================================================
+# V-APP-02: Secure refresh-token hashing
+# ============================================================================
+
 def hash_refresh_token(token: str) -> str:
+    """Hash a refresh token before storing or looking it up."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
-# REMEDIATION END
 
+
+# ============================================================================
+# Registration
+# ============================================================================
 
 @auth_bp.route("/register", methods=["POST"])
 @limiter.limit("5/minute")
 @limiter.limit("5/minute", key_func=get_email_limit_key)
 def register():
     """Register a new merchant account."""
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
+
     email = data.get("email")
     password = data.get("password")
     full_name = data.get("full_name", "")
-    
+
     role = "merchant"
 
-    if not email or not password:
+    if not isinstance(email, str) or not email.strip():
         return jsonify({"error": "email and password required"}), 400
+
+    if not isinstance(password, str) or not password:
+        return jsonify({"error": "email and password required"}), 400
+
+    email = normalize_email(email)
 
     conn = get_connection()
     cur = conn.cursor()
+
     try:
         cur.execute(
-            "INSERT INTO users (email, password_hash, full_name, role) "
-            "VALUES (%s, %s, %s, %s) RETURNING id",
-            (email, hash_password(password), full_name, role)
+            """
+            INSERT INTO users (
+                email,
+                password_hash,
+                full_name,
+                role
+            )
+            VALUES (%s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                email,
+                hash_password(password),
+                full_name,
+                role,
+            ),
         )
+
         user_id = cur.fetchone()["id"]
         conn.commit()
-        return jsonify({
-            "id": user_id,
-            "email": email,
-            "role": role,
-        }), 201
+
+        return jsonify(
+            {
+                "id": user_id,
+                "email": email,
+                "role": role,
+            }
+        ), 201
+
     finally:
         cur.close()
         conn.close()
 
 
+# ============================================================================
+# Login
+# ============================================================================
+
 @auth_bp.route("/login", methods=["POST"])
 @limiter.limit("5/minute")
 @limiter.limit("5/minute", key_func=get_email_limit_key)
 def login():
-    """Authenticate a user and issue a JWT alongside a secure refresh token."""
-    data = request.get_json() or {}
+    """Authenticate a user and issue an access token and refresh token."""
+    data = request.get_json(silent=True) or {}
+
     email = data.get("email")
     password = data.get("password")
 
+    if not isinstance(email, str) or not email.strip():
+        return jsonify({"error": "invalid credentials"}), 401
+
+    if not isinstance(password, str):
+        return jsonify({"error": "invalid credentials"}), 401
+
+    email = normalize_email(email)
+
     conn = get_connection()
     cur = conn.cursor()
+
     try:
         cur.execute(
-            "SELECT id, password_hash, role, is_active "
-            "FROM users WHERE email = %s",
+            """
+            SELECT
+                id,
+                password_hash,
+                role,
+                is_active
+            FROM users
+            WHERE email = %s
+            """,
             (email,),
         )
 
@@ -217,62 +306,96 @@ def login():
             password,
             user["password_hash"],
         )
-        
+
         if not auth_result:
             return jsonify({"error": "invalid credentials"}), 401
-            
+
+        # Legacy password migration:
+        # authenticate_user() may return a newly generated Argon2 hash.
         if isinstance(auth_result, str):
             cur.execute(
-                "UPDATE users SET password_hash = %s WHERE id = %s", 
-                (auth_result, user["id"]),
+                """
+                UPDATE users
+                SET password_hash = %s
+                WHERE id = %s
+                """,
+                (
+                    auth_result,
+                    user["id"],
+                ),
             )
-            conn.commit()
 
         if not user["is_active"]:
             return jsonify({"error": "account suspended"}), 403
 
-        access_token = issue_token(user["id"], user["role"])
+        access_token = issue_token(
+            user["id"],
+            user["role"],
+        )
+
         refresh_token = secrets.token_urlsafe(64)
-        
         token_hash = hash_refresh_token(refresh_token)
-        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-        
+
+        expires_at = (
+            datetime.now(timezone.utc)
+            + timedelta(days=7)
+        )
+
         cur.execute(
             """
-            INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
+            INSERT INTO refresh_tokens (
+                user_id,
+                token_hash,
+                expires_at
+            )
             VALUES (%s, %s, %s)
             """,
-            (user["id"], token_hash, expires_at),
+            (
+                user["id"],
+                token_hash,
+                expires_at,
+            ),
         )
+
         conn.commit()
 
-        return jsonify({
-            "token": access_token,
-            "refresh_token": refresh_token,
-            "user_id": user["id"],
-            "role": user["role"],
-        })
+        return jsonify(
+            {
+                "token": access_token,
+                "refresh_token": refresh_token,
+                "user_id": user["id"],
+                "role": user["role"],
+            }
+        )
 
     finally:
         cur.close()
         conn.close()
 
 
+# ============================================================================
+# Refresh token
+# ============================================================================
+
 @auth_bp.route("/refresh", methods=["POST"])
 @limiter.limit("10/minute")
 def refresh():
-    """Exchange a valid refresh token for a new access token and rotate the refresh credential."""
-    data = request.get_json() or {}
+    """
+    Exchange a valid refresh token for a new access token and rotate the
+    refresh credential.
+    """
+    data = request.get_json(silent=True) or {}
     token = data.get("refresh_token")
-    
-    if not token:
+
+    if not isinstance(token, str) or not token:
         return jsonify({"error": "refresh_token required"}), 400
-        
+
     conn = get_connection()
     cur = conn.cursor()
+
     try:
         token_hash = hash_refresh_token(token)
-        
+
         cur.execute(
             """
             SELECT user_id, expires_at
@@ -282,71 +405,137 @@ def refresh():
             """,
             (token_hash,),
         )
-        row = cur.fetchone()
-        
-        if not row or row["expires_at"] < datetime.now(timezone.utc):
-            return jsonify({"error": "invalid or expired refresh token"}), 401
-            
-        user_id = row["user_id"]
-        
-        cur.execute(
-            "UPDATE refresh_tokens SET revoked_at = NOW() WHERE token_hash = %s",
-            (token_hash,)
-        )
 
-        cur.execute("SELECT role, is_active FROM users WHERE id = %s", (user_id,))
-        user = cur.fetchone()
-        
-        if not user or not user["is_active"]:
-            return jsonify({"error": "account suspended"}), 403
-            
-        new_access_token = issue_token(user_id, user["role"])
-        new_refresh_token = secrets.token_urlsafe(64)
-        new_new_token_hash = hash_refresh_token(new_refresh_token)
-        new_expires = datetime.now(timezone.utc) + timedelta(days=7)
-        
+        row = cur.fetchone()
+
+        if not row:
+            return jsonify(
+                {"error": "invalid or expired refresh token"}
+            ), 401
+
+        if row["expires_at"] < datetime.now(timezone.utc):
+            return jsonify(
+                {"error": "invalid or expired refresh token"}
+            ), 401
+
+        user_id = row["user_id"]
+
         cur.execute(
             """
-            INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
+            UPDATE refresh_tokens
+            SET revoked_at = NOW()
+            WHERE token_hash = %s
+            """,
+            (token_hash,),
+        )
+
+        cur.execute(
+            """
+            SELECT role, is_active
+            FROM users
+            WHERE id = %s
+            """,
+            (user_id,),
+        )
+
+        user = cur.fetchone()
+
+        if not user or not user["is_active"]:
+            conn.rollback()
+            return jsonify({"error": "account suspended"}), 403
+
+        new_access_token = issue_token(
+            user_id,
+            user["role"],
+        )
+
+        new_refresh_token = secrets.token_urlsafe(64)
+        new_token_hash = hash_refresh_token(new_refresh_token)
+
+        new_expires = (
+            datetime.now(timezone.utc)
+            + timedelta(days=7)
+        )
+
+        cur.execute(
+            """
+            INSERT INTO refresh_tokens (
+                user_id,
+                token_hash,
+                expires_at
+            )
             VALUES (%s, %s, %s)
             """,
-            (user_id, new_new_token_hash, new_expires)
+            (
+                user_id,
+                new_token_hash,
+                new_expires,
+            ),
         )
+
         conn.commit()
-        
-        return jsonify({
-            "token": new_access_token,
-            "refresh_token": new_refresh_token,
-            "user_id": user_id,
-            "role": user["role"]
-        })
+
+        return jsonify(
+            {
+                "token": new_access_token,
+                "refresh_token": new_refresh_token,
+                "user_id": user_id,
+                "role": user["role"],
+            }
+        )
+
     finally:
         cur.close()
         conn.close()
 
 
+# ============================================================================
+# OTP
+# ============================================================================
+
 @auth_bp.route("/otp", methods=["POST"])
-# REMEDIATION START: V-APP-08 Dual-dimension Rate Limiting + Canonicalization
-# Maintain the exact decorators for IP + canonical account scoping.
 @limiter.limit("5/minute")
-@limiter.limit("5/minute", key_func=get_otp_account_limit_key)
+@limiter.limit(
+    "5/minute",
+    key_func=get_otp_account_limit_key,
+)
 def request_otp():
-    """Request an OTP code for step-up authentication."""
+    """
+    Request an OTP code for step-up authentication.
+
+    The phone number is canonicalized before use so formatting differences
+    cannot create separate account/rate-limit identities.
+    """
     data = request.get_json(silent=True) or {}
     raw_phone = data.get("phone")
 
     try:
-        # Canonicalize the phone before any further operation to ensure consistency.
         phone = normalize_phone(raw_phone)
     except ValueError:
-        return jsonify({"error": "valid phone number required"}), 400
+        return jsonify(
+            {"error": "valid phone number required"}
+        ), 400
 
-    # Generate/send the OTP using the canonical number.
-    # Replaced insecure 'random' module with secure 'secrets' module.
+    # Cryptographically secure OTP generation.
     otp = f"{secrets.randbelow(900_000) + 100_000:06d}"
 
-    return jsonify({
-        "status": "sent",
-        "phone": phone,
-    })
-# REMEDIATION END
+    # TODO:
+    # Persist only a hash of the OTP, with:
+    #   - short expiration
+    #   - single-use semantics
+    #   - verification-attempt limit
+    #
+    # Example:
+    #
+    # otp_hash = hashlib.sha256(otp.encode("utf-8")).hexdigest()
+    # store_otp_hash(phone, otp_hash, expires_at=...)
+
+    # Send the OTP through the application's SMS provider here.
+    # The plaintext OTP must never be logged.
+
+    return jsonify(
+        {
+            "status": "sent",
+            "phone": phone,
+        }
+    )
