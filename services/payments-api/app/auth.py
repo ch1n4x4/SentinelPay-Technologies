@@ -119,16 +119,23 @@ def require_auth(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
         auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
-            return jsonify({"error": "missing or malformed Authorization header"}), 401
 
-        token = auth_header.replace("Bearer ", "")
+        if not auth_header.startswith("Bearer "):
+            return jsonify({"error": "unauthorized"}), 401
+
+        token = auth_header[len("Bearer "):].strip()
+
+        if not token:
+            return jsonify({"error": "unauthorized"}), 401
+
         try:
             payload = decode_token(token)
-        except Exception as e:
-            return jsonify({"error": f"invalid token: {e}"}), 401
+        except jwt.PyJWTError:
+            return jsonify({"error": "unauthorized"}), 401
 
-        request.current_user_id = payload.get("user_id")
-        request.current_user_role = payload.get("role")
+        request.current_user_id = payload["user_id"]
+        request.current_user_role = payload["role"]
+
         return f(*args, **kwargs)
+
     return wrapper

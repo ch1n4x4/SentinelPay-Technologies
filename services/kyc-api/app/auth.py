@@ -36,11 +36,12 @@ def require_auth(f):
     """Require a valid, signed JWT in the Authorization header."""
     @wraps(f)
     def wrapper(*args, **kwargs):
-        auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer "):
+        auth_header = request.headers.get("Authorization", "")
+
+        if not auth_header.startswith("Bearer "):
             return jsonify({"error": "unauthorized"}), 401
 
-        token = auth[len("Bearer "):].strip()
+        token = auth_header[len("Bearer "):].strip()
 
         if not token:
             return jsonify({"error": "unauthorized"}), 401
@@ -48,10 +49,6 @@ def require_auth(f):
         try:
             payload = decode_token(token)
         except jwt.PyJWTError:
-            app.logger.warning(
-                "JWT validation failed",
-                exc_info=True,
-            )
             return jsonify({"error": "unauthorized"}), 401
 
         request.current_user_id = payload["user_id"]
