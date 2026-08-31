@@ -66,7 +66,8 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_REGION: af-south-1
       KYC_BUCKET: sentinelpay-kyc-documents
-      BVN_LOOKUP_URL: https://api.mock-cbn.local/bvn
+      BVN_CBN_URL: ${BVN_CBN_URL}
+      BVN_PROVIDER_NG_URL: ${BVN_PROVIDER_NG_URL}
       ENVIRONMENT: development
     depends_on:
       - postgres
