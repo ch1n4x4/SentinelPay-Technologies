@@ -6,7 +6,7 @@ services:
     container_name: sentinelpay-postgres
     environment:
       POSTGRES_USER: sentinel
-      POSTGRES_PASSWORD: sentinel123
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sentinel123}
       POSTGRES_DB: sentinelpay
     ports:
       - "5432:5432"
