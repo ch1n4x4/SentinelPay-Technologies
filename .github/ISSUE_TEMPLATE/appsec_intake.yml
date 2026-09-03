@@ -4,7 +4,7 @@ title: "[Bug]: "
 labels: ["bug", "triage"]
 projects: ["octo-org/1", "octo-org/44"]
 assignees:
-  ---
+  - octocat
 type: bug
 body:
   - type: markdown
@@ -12,9 +12,9 @@ body:
       value: |
         Thanks for taking the time to fill out this bug report!
   - type: input
-    id: Security Finding
+    id: scanner
     attributes:
-      label: Scanner
+      label: Security Finding
       description: Which tool detected the issue? 
       placeholder: (e.g., Semgrep, bandit, None)
     validations:
@@ -45,7 +45,7 @@ body:
     attributes:
       label: Exact locations
       description: Please pinpoint the exact endpoint where the bug exixts. Identify the exact line if possible.
-      placeholder: e.g /payments-api/main: line 2
+      placeholder: "ex. /payments-api/main: line 2"
     validations:
       required: True
   - type: upload
