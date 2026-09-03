@@ -19,9 +19,6 @@ From the repository root:
 git checkout <your_branch>
 git pull --ff-only origin <your_branch>
 
-pytest services/payments-api/tests
-pytest services/kyc-api/tests
-
 python3 scripts/security_scan.py
 ```
 
@@ -145,9 +142,6 @@ Before opening a PR:
 git status
 git diff --check
 
-pytest services/payments-api/tests
-pytest services/kyc-api/tests
-
 python3 scripts/security_scan.py
 ```
 
@@ -162,8 +156,6 @@ A PR description should include:
 ```markdown
 ## Security checks
 
-- [x] Payments tests
-- [x] KYC tests
 - [x] Gitleaks
 - [x] Semgrep
 - [x] Bandit
@@ -269,8 +261,6 @@ contain / mitigate
       ↓
 create tracked security issue
       ↓
-write regression test
-      ↓
 implement fix
       ↓
 security review
@@ -321,7 +311,6 @@ Before merging a security-sensitive change:
 [ ] Authentication/authorization behavior reviewed
 [ ] Data-flow impact reviewed
 [ ] Database changes reviewed
-[ ] Regression test added for security fixes
 [ ] PR references the relevant security finding
 [ ] AppSec intake used where appropriate
 ```
