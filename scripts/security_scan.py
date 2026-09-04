@@ -27,7 +27,7 @@ import csv
 import json
 import os
 import shutil
-import subprocess
+import subprocess   # nosec B404
 import sys
 from collections import Counter
 from dataclasses import dataclass, asdict
@@ -72,7 +72,7 @@ def run_command(
     output_file: Path | None = None,
 ) -> tuple[int, str]:
     """Run a scanner and optionally save stdout to a file."""
-    proc = subprocess.run(
+    proc = subprocess.run(   # nosec B603
         cmd,
         cwd=str(cwd),
         text=True,

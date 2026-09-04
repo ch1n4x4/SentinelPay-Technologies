@@ -57,9 +57,10 @@ def get_email_limit_key():
     email = data.get("email")
 
     if not isinstance(email, str) or not email.strip():
-        return f"ip:{get_remote_address()}"
-
-    return f"account:{normalize_email(email)}"
+        return f"ip:{get_remote_address()}" # nosemgrep
+    # False positive: They are used internally by the Flask-Limiter extension 
+    # to build Redis keys for tracking API rate limits. Not vuln to XSS
+    return f"account:{normalize_email(email)}" # nosemgrep
 
 
 def normalize_phone(value: str) -> str:
@@ -145,15 +146,18 @@ def get_otp_account_limit_key():
         # Invalid requests are separately rejected by the endpoint.
         # Keep them in the IP bucket so malformed input cannot generate
         # arbitrary account identities.
-        return f"ip:{get_remote_address()}"
+        return f"ip:{get_remote_address()}"  # nosemgrep
+
 
     digest = hmac.new(
         RATE_LIMIT_KEY_SECRET.encode("utf-8"),
         phone_e164.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
+    # False positive: They are used internally by the Flask-Limiter extension 
+    # to build Redis keys for tracking API rate limits. Not vuln to XSS
+    return f"account-phone:{digest}"  # nosemgrep
 
-    return f"account-phone:{digest}"
 
 # ============================================================================
 # V-APP-02: Secure refresh-token hashing

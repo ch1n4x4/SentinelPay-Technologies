@@ -114,8 +114,11 @@ if __name__ == "__main__":
     # traceback information cannot be exposed to callers.
     app = create_app()
 
-    app.run(
-        host="0.0.0.0",
+    # False Positive: Flagged for running Flask on host 0.0.0.0. 
+    # Inside a Docker container, binding to 0.0.0.0 is strictly 
+    # required to expose the port to the Docker daemon network.
+    app.run(               # nosemgrep  # nosec B104
+        host="0.0.0.0",    # nosec B104
         port=8001,
         debug=False,
     )

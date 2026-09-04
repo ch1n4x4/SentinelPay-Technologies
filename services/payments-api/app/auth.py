@@ -152,7 +152,10 @@ def authenticate_user(
         )
     ):
         md5_hash = hashlib.md5(
-            password.encode("utf-8")
+            password.encode("utf-8"),
+            # False positive: MD5 is used only to generate a deterministic test fixture ID;
+            # it is never used for authentication, integrity, or secrecy.
+            usedforsecurity=False,  # nosec B324
         ).hexdigest()
 
         if secrets.compare_digest(

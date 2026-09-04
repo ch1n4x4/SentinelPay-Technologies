@@ -4,9 +4,14 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: sentinelpay-postgres
+    read_only: true          # Enforcing a read-only filesystem
+    tmpfs:                   # Only allow write access to these directories
+      - /var/lib/postgresql/data
+      - /var/run/postgresql
+      - /tmp
     environment:
       POSTGRES_USER: sentinel
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sentinel123}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: sentinelpay
     ports:
       - "5432:5432"
@@ -18,10 +23,17 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    security_opt:
+      - no-new-privileges:true      #Add to prevent privilege escalation via setuid or setgid binaries
 
   redis:
     image: redis:7-alpine
     container_name: sentinelpay-redis
+    read_only: true          # Enforcing a read-only filesystem
+    tmpfs:                   # Only allow write access to these directories
+      - /var/lib/redis
+      - /data
+      - /tmp
     ports:
       - "6379:6379"
     healthcheck:
@@ -29,6 +41,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    security_opt:
+      - no-new-privileges:true      #Add to prevent privilege escalation via setuid or setgid binaries
 
   payments-api:
     build: ./services/payments-api
