@@ -3,9 +3,8 @@ FROM python:3.11-slim
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --upgrade pip setuptools wheel && \
-    pip install -r requirements.txt
-
+RUN pip install --upgrade --no-cache-dir pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create a non-root user and group, then change ownership of the working directory
