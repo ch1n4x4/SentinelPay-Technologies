@@ -1,0 +1,64 @@
+title = "SentinelPay Gitleaks Configuration"
+
+[extend]
+useDefault = true
+
+# =========================================================
+# SentinelPay-specific rules
+# =========================================================
+
+[[rules]]
+id = "sentinelpay-sensitive-env"
+description = "Detect hardcoded SentinelPay sensitive environment variables"
+regex = '''(?i)(JWT_SECRET|POSTGRES_PASSWORD|PROD_DB_PASSWORD|PARTNER_API_KEY|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY)\s*[:=]\s*["']?([^\s"'#]+)'''
+secretGroup = 2
+keywords = [
+  "jwt_secret",
+  "postgres_password",
+  "prod_db_password",
+  "partner_api_key",
+  "aws_access_key_id",
+  "aws_secret_access_key"
+]
+
+[[rules]]
+id = "sentinelpay-database-url"
+description = "Detect PostgreSQL URLs containing embedded passwords"
+regex = '''(?i)postgres(?:ql)?://[^:\s]+:([^@\s]+)@[^/\s]+/[^\s]+'''
+secretGroup = 1
+keywords = [
+  "postgresql://",
+  "postgres://",
+  "database_url"
+]
+
+[[rules]]
+id = "sentinelpay-slack-webhook"
+description = "Detect Slack webhook URLs"
+regex = '''https://hooks\.slack\.com/services/[A-Za-z0-9/_-]+'''
+keywords = [
+  "hooks.slack.com",
+  "slack_webhook"
+]
+
+[[rules]]
+id = "sentinelpay-terraform-secret"
+description = "Detect hardcoded sensitive values in Terraform"
+regex = '''(?i)(password|secret|token|api_key|access_key|secret_key)\s*=\s*["']([^"'${}\s][^"']*)["']'''
+secretGroup = 2
+keywords = [
+  "password",
+  "secret",
+  "token",
+  "api_key",
+  "access_key",
+  "secret_key"
+]
+
+[allowlist]
+paths = [
+  '''\.env\.example$''',
+]
+regexes = [
+  '''sentinelpay-dev-secret''',
+]
