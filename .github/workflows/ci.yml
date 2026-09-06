@@ -186,13 +186,13 @@ jobs:
         run: |
           docker build \
             -t sentinelpay-payments:${{ github.sha }} \
-            Amdari-Project--02/services/payments-api
+            services/payments-api
 
       - name: Build kyc-api image
         run: |
           docker build \
             -t sentinelpay-kyc:${{ github.sha }} \
-            Amdari-Project--02/services/kyc-api
+            services/kyc-api
 
       - name: Install Trivy
         run: |
