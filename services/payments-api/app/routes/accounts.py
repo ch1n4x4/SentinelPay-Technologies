@@ -1,8 +1,19 @@
 """Account lookup and listing endpoints."""
 from flask import Blueprint, request, jsonify
+from decimal import Decimal
 
 from app.db import get_connection
 from app.auth import require_auth
+
+def serialize_row(row):
+    """Converts Decimal objects in a database row to strings for JSON serialization."""
+    if not row:
+        return None
+    row_dict = dict(row)
+    for key, value in row_dict.items():
+        if isinstance(value, Decimal):
+            row_dict[key] = str(value)
+    return row_dict
 
 accounts_bp = Blueprint("accounts", __name__)
 
@@ -27,7 +38,7 @@ def get_account(account_id):
         account = cur.fetchone()
         if not account:
             return jsonify({"error": "account not found"}), 404
-        return jsonify(dict(account))
+        return jsonify(serialize_row(account))
     finally:
         cur.close()
         conn.close()
@@ -45,7 +56,7 @@ def list_accounts():
             (request.current_user_id,)
         )
         rows = cur.fetchall()
-        return jsonify([dict(r) for r in rows])
+        return jsonify([serialize_row(r) for r in rows])
     finally:
         cur.close()
         conn.close()
@@ -76,7 +87,7 @@ def update_profile(account_id):
         cur.execute(f"UPDATE accounts SET {set_clause} WHERE id = %s RETURNING *", values)
         updated = cur.fetchone()
         conn.commit()
-        return jsonify(dict(updated))
+        return  jsonify(serialize_row(updated))
     finally:
         cur.close()
         conn.close()
