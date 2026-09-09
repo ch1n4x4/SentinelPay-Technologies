@@ -1,0 +1,267 @@
+name: SentinelPay CI
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test-workflow:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Confirm workflow is running
+        run: echo "SentinelPay GitHub Actions pipeline is working"
+
+  gitleaks:
+    name: Gitleaks Secret Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout full Git history
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Gitleaks
+        run: |
+          GITLEAKS_VERSION="8.28.0"
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz
+          sudo mv gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Run SentinelPay Gitleaks scan
+        run: |
+          gitleaks git . \
+            --config .gitleaks.toml \
+            --baseline-path gitleaks-baseline.json \
+            --redact \
+            --verbose
+  bandit:
+    name: Bandit Python Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Bandit
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit
+
+      - name: Scan SentinelPay Python services
+        run: |
+          bandit -r Amdari-Project--02/services/payments-api/app \
+           Amdari-Project--02/services/kyc-api/app \
+           -lll -ii
+  semgrep:
+    name: Semgrep SAST Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Semgrep
+        run: |
+          python -m pip install --upgrade pip
+          pip install semgrep
+
+      - name: Run Semgrep security scan
+        run: |
+          semgrep scan \
+            --config p/python \
+            --config p/security-audit \
+            --severity ERROR \
+            --error \
+            Amdari-Project--02/services
+  trivy-dependencies:
+    name: Trivy Dependency Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | gpg --dearmor \
+            | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      - name: Scan SentinelPay dependencies
+        run: |
+          trivy fs Amdari-Project--02 \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --exit-code 1
+  checkov:
+    name: Checkov Terraform Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Checkov
+        run: |
+          python -m pip install --upgrade pip
+          pip install checkov
+
+      - name: Run Checkov
+        run: |
+          checkov \
+            -d infra \
+            --framework terraform \
+            --hard-fail-on HIGH,CRITICAL \
+            --soft-fail-on LOW,MEDIUM \
+            --compact
+  tfsec:
+    name: tfsec Terraform Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install tfsec
+        run: |
+          TFSEC_VERSION="v1.28.13"
+          curl -sSL \
+            "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}/tfsec-linux-amd64" \
+            -o tfsec
+          chmod +x tfsec
+          sudo mv tfsec /usr/local/bin/tfsec
+          tfsec --version
+
+      - name: Run tfsec
+        run: |
+          tfsec infra \
+            --minimum-severity HIGH \
+            --no-colour
+  trivy-images:
+    name: Trivy Container Image Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Build payments-api image
+        run: |
+          docker build \
+            -t sentinelpay-payments:${{ github.sha }} \
+            services/payments-api
+
+      - name: Build kyc-api image
+        run: |
+          docker build \
+            -t sentinelpay-kyc:${{ github.sha }} \
+            services/kyc-api
+
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | gpg --dearmor \
+            | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      - name: Scan payments-api image
+        id: trivy_payments
+        continue-on-error: true
+        run: |
+          trivy image sentinelpay-payments:${{ github.sha }} \
+            --severity HIGH,CRITICAL \
+            --output trivy-payments-report.txt \
+            --exit-code 1
+
+      - name: Scan kyc-api image
+        id: trivy_kyc
+        continue-on-error: true
+        run: |
+          trivy image sentinelpay-kyc:${{ github.sha }} \
+            --severity HIGH,CRITICAL \
+            --output trivy-kyc-report.txt \
+            --exit-code 1
+
+      - name: Upload Trivy scan results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-image-scan-results
+          path: |
+            trivy-payments-report.txt
+            trivy-kyc-report.txt
+          retention-days: 7
+
+      - name: Enforce Trivy image security gate
+        if: always()
+        run: |
+          if [ "${{ steps.trivy_payments.outcome }}" = "failure" ] || \
+             [ "${{ steps.trivy_kyc.outcome }}" = "failure" ]; then
+            echo "HIGH or CRITICAL vulnerabilities detected in one or more SentinelPay images."
+            exit 1
+          fi
+
+          echo "No HIGH or CRITICAL vulnerabilities detected."
+  aws-oidc-test:
+    name: Test AWS OIDC Authentication
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: eu-west-1
+
+      - name: Verify AWS identity
+        run: |
+          aws sts get-caller-identity

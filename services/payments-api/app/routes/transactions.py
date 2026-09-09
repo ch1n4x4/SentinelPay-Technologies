@@ -1,5 +1,6 @@
 """Transaction search and listing endpoints."""
 from flask import Blueprint, request, jsonify
+from decimal import Decimal
 
 from app.db import get_connection
 from app.auth import require_auth
@@ -34,7 +35,15 @@ def search_transactions():
 
         cur.execute(query)
         rows = cur.fetchall()
-        return jsonify([dict(r) for r in rows])
+        result = []
+        for r in rows:
+            row_dict = dict(r)
+            for key, value in row_dict.items():
+                if isinstance(value, Decimal):
+                    row_dict[key] = str(value)  # Convert to string to preserve exact financial precision
+        result.append(row_dict)
+
+        return jsonify(result)
     finally:
         cur.close()
         conn.close()
